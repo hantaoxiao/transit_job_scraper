@@ -71,7 +71,12 @@ if __name__ == "__main__":
         print("\nNo jobs were collected. Some sites may block scraping or require custom parsers.")
     else:
         df = df.drop_duplicates(subset=["job_id"])
-        df = df.sort_values(["agency", "title"]).reset_index(drop=True)
+        sort_cols = [
+            col
+            for col in ["agency", "ai_sort_category", "ai_sort_seniority", "category", "title"]
+            if col in df.columns
+        ]
+        df = df.sort_values(sort_cols).reset_index(drop=True)
 
     output_path = output_dir / "transit_jobs.csv"
     df.to_csv(output_path, index=False)
