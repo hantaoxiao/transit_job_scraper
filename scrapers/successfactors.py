@@ -4,7 +4,7 @@ from urllib.parse import urljoin
 import requests
 from bs4 import BeautifulSoup
 
-from normalizer import clean_text, normalize_job
+from normalizer import clean_text, extract_salary, normalize_job
 
 
 HEADERS = {
@@ -22,9 +22,21 @@ def _extract_field(text: str, label: str) -> str:
     return clean_text(match.group(1)) if match else ""
 
 
+def _detail_text(session: requests.Session, url: str) -> str:
+    try:
+        response = session.get(url, headers=HEADERS, timeout=30)
+        response.raise_for_status()
+    except requests.RequestException:
+        return ""
+
+    soup = BeautifulSoup(response.text, "lxml")
+    return clean_text(soup.get_text(" ", strip=True))
+
+
 def scrape_successfactors(agency: dict) -> list[dict]:
     url = urljoin(agency["jobs_url"], DEFAULT_LISTING_PATH)
-    response = requests.get(url, headers=HEADERS, timeout=30)
+    session = requests.Session()
+    response = session.get(url, headers=HEADERS, timeout=30)
     response.raise_for_status()
 
     soup = BeautifulSoup(response.text, "lxml")
@@ -40,8 +52,11 @@ def scrape_successfactors(agency: dict) -> list[dict]:
 
         row = link.find_parent(class_="job-row") or link.find_parent()
         raw_context = clean_text(row.get_text(" ", strip=True)) if row else title
+        detail_text = _detail_text(session, source_url)
+        combined_context = clean_text(" ".join(value for value in [raw_context, detail_text] if value))
         city = _extract_field(raw_context, "City") or agency["city"]
         department = _extract_field(raw_context, "Department")
+        salary_text = extract_salary(detail_text)
 
         jobs.append(
             normalize_job(
@@ -51,8 +66,9 @@ def scrape_successfactors(agency: dict) -> list[dict]:
                 state=agency["state"],
                 source_url=source_url,
                 platform=agency["platform"],
+                salary_text=salary_text,
                 description=department,
-                raw_context=raw_context,
+                raw_context=combined_context,
             )
         )
 

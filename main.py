@@ -1,4 +1,5 @@
 from pathlib import Path
+import json
 
 import pandas as pd
 
@@ -11,6 +12,8 @@ from scrapers.successfactors import scrape_successfactors
 from scrapers.mta_custom import scrape_mta
 from scrapers.ukg import scrape_ukg
 from scrapers.salesforce_custom import scrape_salesforce_custom
+from scrapers.sf_careers import scrape_sf_careers
+from scrapers.peoplesoft_wmata import scrape_peoplesoft_wmata
 
 
 SCRAPER_MAP = {
@@ -22,15 +25,49 @@ SCRAPER_MAP = {
     "mta_custom": scrape_mta,
     "ukg": scrape_ukg,
     "salesforce_custom": scrape_salesforce_custom,
+    "sf_careers": scrape_sf_careers,
+    "peoplesoft_wmata": scrape_peoplesoft_wmata,
 }
 
-UNIMPLEMENTED_PLATFORMS = {
-    "oracle",
-    "salesforce_custom",
-    "taleo",
-    "ukg",
-    "workday",
-}
+
+def write_site_data(df: pd.DataFrame, site_dir: Path) -> None:
+    site_dir.mkdir(exist_ok=True)
+    site_df = df.drop(
+        columns=["salary_midpoint", "salary_annual_mid_est"],
+        errors="ignore",
+    )
+    records = site_df.fillna("").to_dict(orient="records")
+    agencies = []
+
+    if not df.empty:
+        for agency, group in df.groupby("agency"):
+            total = len(group)
+            salary_listed = int(group.get("salary_is_listed", pd.Series(dtype=bool)).fillna(False).sum())
+            comparable_salary = int(group.get("salary_is_comparable", pd.Series(dtype=bool)).fillna(False).sum())
+            closing_dates = int(group.get("closing_date", pd.Series(dtype=str)).fillna("").astype(bool).sum())
+            agencies.append(
+                {
+                    "agency": agency,
+                    "total_jobs": total,
+                    "salary_listed_pct": round(salary_listed / total * 100) if total else 0,
+                    "comparable_salary_pct": round(comparable_salary / total * 100) if total else 0,
+                    "closing_date_pct": round(closing_dates / total * 100) if total else 0,
+                }
+            )
+
+    payload = {
+        "generated_at": pd.Timestamp.utcnow().isoformat(),
+        "jobs": records,
+        "agency_metrics": sorted(agencies, key=lambda item: item["agency"]),
+    }
+
+    data_path = site_dir / "data.js"
+    data_path.write_text(
+        "window.TRANSIT_JOBS_DATA = "
+        + json.dumps(payload, ensure_ascii=False)
+        + ";\n",
+        encoding="utf-8",
+    )
 
 
 def run_all_scrapers() -> list[dict]:
@@ -45,10 +82,6 @@ def run_all_scrapers() -> list[dict]:
             continue
 
         print(f"\nScraping {agency['agency']} using {platform} scraper")
-
-        if platform in UNIMPLEMENTED_PLATFORMS:
-            print(f"Skipped: {platform} scraper is not implemented yet")
-            continue
 
         try:
             jobs = scraper(agency)
@@ -80,6 +113,7 @@ if __name__ == "__main__":
 
     output_path = output_dir / "transit_jobs.csv"
     df.to_csv(output_path, index=False)
+    write_site_data(df, Path("site"))
 
     print(f"\nSaved {len(df)} jobs to {output_path}")
 

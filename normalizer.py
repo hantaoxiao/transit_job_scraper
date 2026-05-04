@@ -15,14 +15,69 @@ def make_job_id(agency: str, title: str, source_url: str) -> str:
     return hashlib.md5(raw.encode("utf-8")).hexdigest()
 
 
-def extract_salary(text: str | None) -> str:
+def extract_salary(text: Optional[str]) -> str:
     text = clean_text(text)
     if not text:
         return ""
 
+    starting_salary = re.search(
+        r"\bstarting salary\s*:?\s*-?\s*(\$\s*\d[\d,.]*)",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if starting_salary:
+        return clean_text(starting_salary.group(1))
+
+    explicit_range = re.search(
+        r"\bsalary range\s*(?:is|:)?\s*-?\s*(\$\s*\d[\d,.]*\s*[kK]?\s*(?:[-–]|to)\s*\$?\s*\d[\d,.]*\s*[kK]?)",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if explicit_range:
+        return clean_text(explicit_range.group(1))
+
+    stop_labels = (
+        r"deadline|dept/div|department|location|regulated|union affiliation|job description|"
+        r"description|overall description|specific responsibilities|qualifications|why join|"
+        r"nearest major|apply now|find similar jobs|job location|additional"
+    )
+    salary_section = re.search(
+        rf"(?:starting salary|salary range|pay range|annual salary|base salary|compensation)\s*(?:is|:)?\s*-?\s*(.+?)(?=\s+(?:{stop_labels})\s*:?\s+|$)",
+        text,
+        flags=re.IGNORECASE,
+    ) or re.search(
+        rf"\bsalary\s*:\s*-?\s*(.+?)(?=\s+(?:{stop_labels})\s*:?\s+|$)",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if salary_section:
+        section = salary_section.group(1)
+        if "$" not in section:
+            return ""
+        money_matches = list(re.finditer(r"\$?\s*\d[\d,.]*\s*[kK]?", section))
+        if money_matches:
+            end = money_matches[-1].end()
+            return clean_text(section[:end])
+
+    pre_description = re.search(
+        r"(.+?)(?=\s+overall description\b)",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if pre_description and "$" in pre_description.group(1):
+        section = pre_description.group(1)
+        money_matches = list(re.finditer(r"\$?\s*\d[\d,.]*\s*[kK]?(?:\s*/?\s*(?:hr|hour))?", section, flags=re.IGNORECASE))
+        if money_matches:
+            start = section.find("$")
+            end = money_matches[-1].end()
+            return clean_text(section[start:end])
+
+    if len(text) > 180:
+        return ""
+
     patterns = [
-        r"\$\s*\d{2,3},?\d{3}(?:\.\d{2})?\s*[-–]\s*\$?\s*\d{2,3},?\d{3}(?:\.\d{2})?",
-        r"\$\s*\d{2,3},?\d{3}(?:\.\d{2})?",
+        r"\$\s*\d[\d,.]*\s*[kK]?\s*(?:[-–]|to)\s*\$?\s*\d[\d,.]*\s*[kK]?(?:\s*(?:/|per)\s*(?:hour|hr))?",
+        r"\$\s*\d[\d,.]*\s*[kK]?",
         r"\$\s*\d{2,3}(?:\.\d{2})?\s*/\s*hour",
         r"\$\s*\d{2,3}(?:\.\d{2})?\s*per\s*hour",
     ]
@@ -33,6 +88,180 @@ def extract_salary(text: str | None) -> str:
             return match.group(0)
 
     return ""
+
+
+def salary_has_money(text: Optional[str]) -> bool:
+    return bool(re.search(r"\$\s*\d", clean_text(text)))
+
+
+def _parse_money(value: str) -> Optional[float]:
+    multiplier = 1000 if re.search(r"[kK]\s*$", value.strip()) else 1
+    value = value.replace("$", "").replace(",", "").strip()
+    value = re.sub(r"[kK]\s*$", "", value).strip()
+
+    if re.fullmatch(r"\d{1,3}(?:\.\d{3}){2,}", value):
+        value = value.replace(".", ",").replace(",", "")
+
+    try:
+        return float(value) * multiplier
+    except ValueError:
+        return None
+
+
+def _money_values(text: str) -> list[float]:
+    values = []
+    dollar_tokens = re.findall(r"\$\s*\d[\d,.]*\s*[kK]?", text)
+    bare_range_tokens = re.findall(
+        r"\$\s*\d[\d,.]*\s*[kK]?\s*(?:[-–]|to|min-?)\s*\$?\s*(\d[\d,.]*\s*[kK]?)",
+        text,
+        flags=re.IGNORECASE,
+    )
+
+    for token in [*dollar_tokens, *bare_range_tokens]:
+
+        value = _parse_money(token)
+        if value is None:
+            continue
+        if value < 10:
+            continue
+        values.append(value)
+
+    return values
+
+
+def _format_money(value: float, unit: str) -> str:
+    if unit == "hourly":
+        return f"${value:,.2f}/hr"
+    if value < 1000 and value != round(value):
+        return f"${value:,.2f}"
+    return f"${value:,.0f}"
+
+
+def _salary_range_display(salary_min: float, salary_max: float, unit: str) -> str:
+    if salary_min == salary_max:
+        return _format_money(salary_min, unit)
+    return f"{_format_money(salary_min, unit)} - {_format_money(salary_max, unit)}"
+
+
+def parse_salary(salary_text: Optional[str]) -> dict:
+    text = clean_text(salary_text)
+    if not text:
+        return {
+            "salary_display": "Salary not listed",
+            "salary_is_listed": False,
+            "salary_min": "",
+            "salary_max": "",
+            "salary_midpoint": "",
+            "salary_range_display": "Salary not listed",
+            "salary_unit": "unknown",
+            "salary_annual_min_est": "",
+            "salary_annual_max_est": "",
+            "salary_annual_mid_est": "",
+            "salary_is_comparable": False,
+            "salary_confidence": "missing",
+        }
+
+    normalized = text.lower()
+    values = _money_values(text)
+
+    if not values:
+        return {
+            "salary_display": text,
+            "salary_is_listed": True,
+            "salary_min": "",
+            "salary_max": "",
+            "salary_midpoint": "",
+            "salary_range_display": text,
+            "salary_unit": "unknown",
+            "salary_annual_min_est": "",
+            "salary_annual_max_est": "",
+            "salary_annual_mid_est": "",
+            "salary_is_comparable": False,
+            "salary_confidence": "low",
+        }
+
+    salary_min = min(values)
+    salary_max = max(values)
+    salary_midpoint = round((salary_min + salary_max) / 2, 2)
+    is_hourly = bool(re.search(r"\b(hour|hourly|hr)\b|/\s*h", normalized))
+    is_annual = (
+        bool(re.search(r"\b(year|annual|annually|salary|per annum)\b", normalized))
+        or salary_max >= 1000
+    )
+
+    if salary_max < 1000 and (is_hourly or not is_annual):
+        unit = "hourly"
+        annual_min = round(salary_min * 2080)
+        annual_max = round(salary_max * 2080)
+        annual_mid = round(salary_midpoint * 2080)
+        comparable = True
+        confidence = "medium"
+    elif is_annual:
+        unit = "annual"
+        annual_min = round(salary_min)
+        annual_max = round(salary_max)
+        annual_mid = round(salary_midpoint)
+        comparable = True
+        confidence = "high"
+    else:
+        unit = "unknown"
+        annual_min = ""
+        annual_max = ""
+        annual_mid = ""
+        comparable = False
+        confidence = "low"
+
+    range_display = _salary_range_display(salary_min, salary_max, unit)
+
+    return {
+        "salary_display": range_display,
+        "salary_is_listed": True,
+        "salary_min": salary_min,
+        "salary_max": salary_max,
+        "salary_midpoint": salary_midpoint,
+        "salary_range_display": range_display,
+        "salary_unit": unit,
+        "salary_annual_min_est": annual_min,
+        "salary_annual_max_est": annual_max,
+        "salary_annual_mid_est": annual_mid,
+        "salary_is_comparable": comparable,
+        "salary_confidence": confidence,
+    }
+
+
+def compute_data_quality(job: dict) -> dict:
+    checks = {
+        "has_title": bool(job.get("title")),
+        "has_agency": bool(job.get("agency")),
+        "has_location": bool(job.get("city") and job.get("state")),
+        "has_source_url": bool(job.get("source_url")),
+        "has_category": bool(job.get("category") and job.get("category") != "Other"),
+        "has_seniority": bool(job.get("ai_sort_seniority")),
+        "has_salary": bool(job.get("salary_is_listed")),
+        "has_posted_date": bool(job.get("posted_date")),
+        "has_closing_date": bool(job.get("closing_date")),
+        "has_description": bool(job.get("description") or job.get("all_meaningful_info")),
+    }
+    score = round(sum(checks.values()) / len(checks) * 100)
+
+    if score >= 80 and checks["has_salary"]:
+        label = "Complete"
+    elif score >= 55:
+        label = "Partial"
+    else:
+        label = "Minimal"
+
+    missing = [
+        label.replace("has_", "")
+        for label, present in checks.items()
+        if not present
+    ]
+
+    return {
+        "data_quality": label,
+        "data_completeness_score": score,
+        "missing_fields": ", ".join(missing),
+    }
 
 
 def classify_category(title: str, text: str = "") -> str:
@@ -71,7 +300,7 @@ def infer_seniority(title: str, text: str = "") -> str:
     title_lower = title.lower()
     combined = f"{title} {text}".lower()
 
-    if any(term in combined for term in ["intern", "internship", "apprentice", "fellowship"]):
+    if re.search(r"\b(intern|internship|apprentice|fellowship)\b", combined):
         return "Internship / Early Career"
     if any(term in title_lower for term in ["chief", "executive", "vice president", "avp", "deputy general counsel"]):
         return "Executive"
@@ -94,19 +323,22 @@ def normalize_job(
     state: str,
     source_url: str,
     platform: str,
-    salary_text: str | None = None,
-    posted_date: str | None = None,
-    closing_date: str | None = None,
-    category: str | None = None,
-    description: str | None = None,
-    raw_context: str | None = None,
-    extra_fields: dict | None = None,
+    salary_text: Optional[str] = None,
+    posted_date: Optional[str] = None,
+    closing_date: Optional[str] = None,
+    category: Optional[str] = None,
+    description: Optional[str] = None,
+    raw_context: Optional[str] = None,
+    extra_fields: Optional[dict] = None,
 ) -> dict:
     title = clean_text(title)
     source_url = clean_text(source_url)
     description = clean_text(description)
     raw_context = clean_text(raw_context)
-    salary_text = clean_text(salary_text) or extract_salary(raw_context or description)
+    salary_text = clean_text(salary_text)
+    if not salary_has_money(salary_text):
+        salary_text = extract_salary(raw_context or description) or salary_text
+    salary_fields = parse_salary(salary_text)
     category_text = raw_context or description
     category = category or classify_category(title, category_text)
     seniority = infer_seniority(title, category_text)
@@ -120,6 +352,7 @@ def normalize_job(
         "source_url": source_url,
         "platform": platform,
         "salary_text": salary_text,
+        **salary_fields,
         "posted_date": posted_date or "",
         "closing_date": closing_date or "",
         "category": category,
@@ -133,5 +366,7 @@ def normalize_job(
 
     if extra_fields:
         job.update(extra_fields)
+
+    job.update(compute_data_quality(job))
 
     return job

@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Transit Jobs</title>
+    <link rel="stylesheet" href="styles.css">
+  </head>
+  <body>
+    <header class="app-header">
+      <div>
+        <p class="eyebrow">Transit careers</p>
+        <h1>Find public transportation jobs</h1>
+      </div>
+      <div class="header-meta">
+        <strong id="totalJobs">0</strong>
+        <span>open roles</span>
+        <span id="generatedAt">Updated locally</span>
+      </div>
+    </header>
+
+    <main>
+      <section class="toolbar" aria-label="Search and filters">
+        <label class="field search-field">
+          <span>Search</span>
+          <input id="searchInput" type="search" placeholder="Planner, engineer, analyst, operator">
+        </label>
+
+        <label class="field">
+          <span>Agency</span>
+          <select id="agencyFilter">
+            <option value="">All agencies</option>
+          </select>
+        </label>
+
+        <label class="field">
+          <span>Category</span>
+          <select id="categoryFilter">
+            <option value="">All categories</option>
+          </select>
+        </label>
+
+        <label class="field">
+          <span>Seniority</span>
+          <select id="seniorityFilter">
+            <option value="">All levels</option>
+          </select>
+        </label>
+
+        <label class="field">
+          <span>Sort</span>
+          <select id="sortSelect">
+            <option value="posted_desc">Newest posted</option>
+            <option value="closing_asc">Closing soon</option>
+            <option value="pay_desc">Highest pay</option>
+            <option value="pay_asc">Lowest pay</option>
+            <option value="agency_asc">Agency A-Z</option>
+            <option value="title_asc">Title A-Z</option>
+          </select>
+        </label>
+
+        <div class="field salary-field">
+          <span>Minimum pay</span>
+          <div class="salary-row">
+            <input id="salaryRange" type="range" min="0" max="250000" step="5000" value="0">
+            <output id="salaryOutput">Any</output>
+          </div>
+          <label class="check-row">
+            <input id="includeUnknownSalary" type="checkbox" checked>
+            <span>Include jobs without listed pay</span>
+          </label>
+        </div>
+      </section>
+
+      <section class="agency-strip" aria-label="Agencies">
+        <div id="agencyChips" class="agency-chips"></div>
+      </section>
+
+      <section class="results" aria-label="Job results">
+        <div class="results-heading">
+          <h2>Open positions</h2>
+          <span id="resultCount">0 shown</span>
+        </div>
+        <div id="jobList" class="job-list"></div>
+      </section>
+    </main>
+
+    <script src="data.js"></script>
+    <script src="app.js"></script>
+  </body>
+</html>

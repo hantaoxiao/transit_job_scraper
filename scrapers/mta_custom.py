@@ -1,6 +1,8 @@
+import csv
 import re
 import time
 from pathlib import Path
+from typing import Optional
 from urllib.parse import urljoin, urlparse
 
 import requests
@@ -47,6 +49,21 @@ DETAIL_LABELS = (
     "Metro-North Closing Date",
 )
 
+CACHE_PATH = Path("output/transit_jobs.csv")
+CACHE_BOOL_FIELDS = {
+    "salary_is_listed",
+    "salary_is_comparable",
+}
+CACHE_NUMBER_FIELDS = {
+    "salary_min",
+    "salary_max",
+    "salary_midpoint",
+    "salary_annual_min_est",
+    "salary_annual_max_est",
+    "salary_annual_mid_est",
+    "data_completeness_score",
+}
+
 
 def _extract_field(text: str, label: str) -> str:
     match = re.search(rf"{re.escape(label)}:\s*(.*?)(?=\s+[A-Z][A-Za-z ]+:\s*|$)", text)
@@ -79,6 +96,36 @@ def _dedupe_jobs(jobs: list[dict]) -> list[dict]:
         deduped.append(job)
 
     return deduped
+
+
+def _coerce_cached_job(row: dict) -> dict:
+    job = dict(row)
+    for field in CACHE_BOOL_FIELDS:
+        if field in job:
+            job[field] = str(job[field]).lower() in {"true", "1", "yes"}
+
+    for field in CACHE_NUMBER_FIELDS:
+        if field not in job or job[field] == "":
+            continue
+        try:
+            job[field] = float(job[field])
+        except (TypeError, ValueError):
+            pass
+
+    return job
+
+
+def _load_existing_mta_cache(agency: dict) -> dict[str, dict]:
+    if not CACHE_PATH.exists():
+        return {}
+
+    with CACHE_PATH.open(newline="", encoding="utf-8") as handle:
+        rows = csv.DictReader(handle)
+        return {
+            row["source_url"]: _coerce_cached_job(row)
+            for row in rows
+            if row.get("agency") == agency["agency"] and row.get("source_url")
+        }
 
 
 def _discover_search_urls(session: requests.Session) -> list[str]:
@@ -243,7 +290,7 @@ def _parse_detail_page(html: str) -> dict:
     return details
 
 
-def _build_mta_job(summary: dict, agency: dict, details: dict | None = None) -> dict:
+def _build_mta_job(summary: dict, agency: dict, details: Optional[dict] = None) -> dict:
     details = details or {}
     location = details.get("detail_location") or summary.get("location", "")
     city, state = _location_to_city_state(location, agency)
@@ -339,7 +386,7 @@ def _scrape_mta_requests(agency: dict) -> list[dict]:
     return _dedupe_jobs(jobs)
 
 
-def _wait_for_mta_browser_page(page, url: str, selector: str | None = None) -> str:
+def _wait_for_mta_browser_page(page, url: str, selector: Optional[str] = None) -> str:
     page.goto(url, wait_until="domcontentloaded", timeout=120_000)
 
     if selector:
@@ -368,6 +415,7 @@ def _scrape_mta_browser(agency: dict) -> list[dict]:
         ) from exc
 
     summaries = []
+    cached_jobs = _load_existing_mta_cache(agency)
 
     with sync_playwright() as p:
         context = p.chromium.launch_persistent_context(
@@ -395,8 +443,14 @@ def _scrape_mta_browser(agency: dict) -> list[dict]:
         summaries = _dedupe_jobs([_build_mta_job(summary, agency) for summary in summaries])
         summary_by_url = {job["source_url"]: job for job in summaries}
         jobs = []
+        skipped_details = 0
 
         for index, source_url in enumerate(summary_by_url, start=1):
+            if source_url in cached_jobs:
+                jobs.append(cached_jobs[source_url])
+                skipped_details += 1
+                continue
+
             if index == 1 or index % 25 == 0:
                 print(f"Enriching MTA job details {index}/{len(summary_by_url)}")
 
@@ -412,6 +466,9 @@ def _scrape_mta_browser(agency: dict) -> list[dict]:
             }
             jobs.append(_build_mta_job(summary, agency, details))
             time.sleep(0.2)
+
+        if skipped_details:
+            print(f"Used cached MTA details for {skipped_details}/{len(summary_by_url)} jobs")
 
         context.close()
 

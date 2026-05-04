@@ -1,0 +1,6 @@
+.venv/
+__pycache__/
+*.pyc
+.mta_browser_profile/
+output/
+.DS_Store

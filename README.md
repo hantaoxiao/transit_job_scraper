@@ -12,16 +12,11 @@ Implemented:
 - Agency classification
 - Standardized job output format
 - Reusable GovernmentJobs / NEOGOV scraper starter
-- Placeholder scrapers for Workday, Oracle, Taleo, SuccessFactors, MTA custom, UKG, and Salesforce custom
+- Scrapers for MTA custom, SuccessFactors, Workday, Oracle, UKG, NJ Transit Salesforce, SF Careers, and WMATA PeopleSoft pages
+- GovernmentJobs / NEOGOV scraper using the platform's job-results endpoint and detail pages
 - CSV output
 
-The first practical target is to collect jobs from GovernmentJobs-based agencies such as:
-- LA Metro
-- BART
-- MBTA
-- TriMet
-
-Other platforms need custom work later.
+Some career portals return zero public jobs at times or require browser/API behavior that changes by agency. The script logs each agency result and continues when one site fails.
 
 ## Install
 
@@ -47,6 +42,20 @@ The script will save output to:
 output/transit_jobs.csv
 ```
 
+The script also writes a local website data bundle to:
+
+```text
+site/data.js
+```
+
+Open this file in a browser to view the job explorer:
+
+```text
+site/index.html
+```
+
+Salary fields keep the original source text and add normalized range fields such as `salary_min`, `salary_max`, `salary_range_display`, and annualized comparison fields when the salary is safe to compare.
+
 ## Project structure
 
 ```text
@@ -59,6 +68,8 @@ transit_job_scraper/
 ├── scrapers/
 │   ├── __init__.py
 │   ├── governmentjobs.py
+│   ├── peoplesoft_wmata.py
+│   ├── sf_careers.py
 │   ├── workday.py
 │   ├── oracle.py
 │   ├── taleo.py
