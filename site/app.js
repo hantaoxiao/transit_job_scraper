@@ -16,6 +16,72 @@
     agencyChips: document.getElementById("agencyChips"),
     resultCount: document.getElementById("resultCount"),
     jobList: document.getElementById("jobList"),
+    mapView: document.getElementById("mapView"),
+    listViewButton: document.getElementById("listViewButton"),
+    mapViewButton: document.getElementById("mapViewButton"),
+  };
+
+  let currentView = "list";
+
+  const agencyMeta = {
+    "AC Transit": { short: "AC", name: "AC Transit", color: "#0f6b50", location: "Oakland, CA", logo: "assets/agency-logos/ac-transit.png" },
+    "BART": { short: "BART", name: "Bay Area Rapid Transit", color: "#0074bc", location: "Oakland, CA", logo: "assets/agency-logos/bart.png" },
+    "CTA": { short: "CTA", name: "Chicago Transit Authority", color: "#c62828", location: "Chicago, IL", logo: "assets/agency-logos/cta.png" },
+    "Honolulu DTS": { short: "DTS", name: "Honolulu Department of Transportation Services", color: "#007a7a", location: "Honolulu, HI", logo: "assets/agency-logos/honolulu-dts.png" },
+    "King County Metro": { short: "KCM", name: "King County Metro", color: "#f0a202", location: "Seattle, WA", logo: "assets/agency-logos/king-county-metro.png" },
+    "LA Metro": { short: "LA", name: "Los Angeles Metro", color: "#d11f3d", location: "Los Angeles, CA", logo: "assets/agency-logos/la-metro.png" },
+    "MARTA": { short: "MARTA", name: "Metropolitan Atlanta Rapid Transit Authority", color: "#1c4f9c", location: "Atlanta, GA", logo: "assets/agency-logos/marta.png" },
+    "MBTA": { short: "T", name: "Massachusetts Bay Transportation Authority", color: "#111111", location: "Boston, MA", logo: "assets/agency-logos/mbta.png" },
+    "MTA": { short: "MTA", name: "Metropolitan Transportation Authority", color: "#0039a6", location: "New York, NY", logo: "assets/agency-logos/mta.svg" },
+    "NJ Transit": { short: "NJT", name: "NJ Transit", color: "#f37021", location: "Newark, NJ", logo: "assets/agency-logos/nj-transit.png" },
+    "RTC Transit": { short: "RTC", name: "Regional Transportation Commission of Southern Nevada", color: "#6f2c91", location: "Las Vegas, NV", logo: "assets/agency-logos/rtc-transit.png" },
+    "RTD Denver": { short: "RTD", name: "Regional Transportation District Denver", color: "#005daa", location: "Denver, CO", logo: "assets/agency-logos/rtd-denver.png" },
+    "SEPTA": { short: "SEPTA", name: "Southeastern Pennsylvania Transportation Authority", color: "#1f4e79", location: "Philadelphia, PA", logo: "assets/agency-logos/septa.png" },
+    "SFMTA": { short: "Muni", name: "San Francisco Municipal Transportation Agency", color: "#b71c1c", location: "San Francisco, CA", logo: "assets/agency-logos/sfmta.png" },
+    "Sound Transit": { short: "ST", name: "Sound Transit", color: "#00843d", location: "Seattle, WA", logo: "assets/agency-logos/sound-transit.svg" },
+    "TriMet": { short: "TriMet", name: "TriMet", color: "#006b54", location: "Portland, OR", logo: "assets/agency-logos/trimet.png" },
+    "WMATA": { short: "Metro", name: "Washington Metropolitan Area Transit Authority", color: "#005ea8", location: "Washington, DC", logo: "assets/agency-logos/wmata.svg" },
+  };
+
+  const agencyPoints = {
+    "AC Transit": { x: 14, y: 52 },
+    "BART": { x: 14, y: 52 },
+    "CTA": { x: 62, y: 38 },
+    "Honolulu DTS": { x: 8, y: 84 },
+    "King County Metro": { x: 17, y: 21 },
+    "LA Metro": { x: 18, y: 63 },
+    "MARTA": { x: 69, y: 67 },
+    "MBTA": { x: 88, y: 28 },
+    "MTA": { x: 84, y: 35 },
+    "NJ Transit": { x: 83, y: 38 },
+    "RTC Transit": { x: 24, y: 58 },
+    "RTD Denver": { x: 44, y: 49 },
+    "SEPTA": { x: 81, y: 41 },
+    "SFMTA": { x: 13, y: 53 },
+    "Sound Transit": { x: 17, y: 21 },
+    "TriMet": { x: 16, y: 27 },
+    "WMATA": { x: 79, y: 47 },
+  };
+
+  const locationPoints = {
+    "Alexandria, VA": { x: 79, y: 47 },
+    "Atlanta, GA": { x: 69, y: 67 },
+    "Boston, MA": { x: 88, y: 28 },
+    "Brooklyn, NY": { x: 84, y: 36 },
+    "Chicago, IL": { x: 62, y: 38 },
+    "Denver, CO": { x: 44, y: 49 },
+    "Honolulu, HI": { x: 8, y: 84 },
+    "Jamaica, NY": { x: 84, y: 36 },
+    "Las Vegas, NV": { x: 24, y: 58 },
+    "Los Angeles, CA": { x: 18, y: 63 },
+    "New York, NY": { x: 84, y: 35 },
+    "Newark, NJ": { x: 83, y: 38 },
+    "Oakland, CA": { x: 14, y: 52 },
+    "Philadelphia, PA": { x: 81, y: 41 },
+    "Portland, OR": { x: 16, y: 27 },
+    "San Francisco, CA": { x: 13, y: 53 },
+    "Seattle, WA": { x: 17, y: 21 },
+    "Washington, DC": { x: 79, y: 47 },
   };
 
   const money = new Intl.NumberFormat("en-US", {
@@ -35,7 +101,7 @@
 
   function dateValue(value) {
     if (!value) return 0;
-    const normalized = String(value).replace(/\b(Open Until Filled|Open until filled|Apply immediately)\b.*/i, "");
+    const normalized = conciseDate(value).replace(/\b(Open Until Filled|Open until filled|Apply immediately)\b.*/i, "");
     const date = new Date(normalized);
     return Number.isNaN(date.getTime()) ? 0 : date.getTime();
   }
@@ -55,9 +121,26 @@
 
   function formatDate(value) {
     if (!value) return "";
-    const date = new Date(value);
-    if (Number.isNaN(date.getTime())) return value;
+    const concise = conciseDate(value);
+    const date = new Date(concise);
+    if (Number.isNaN(date.getTime())) return concise;
     return date.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
+  }
+
+  function conciseDate(value) {
+    const text = String(value || "").trim();
+    if (!text) return "";
+
+    const status = text.match(/\b(continuous|open until filled|apply immediately)\b/i);
+    if (status && status.index < 40) return status[1].replace(/\b\w/g, (letter) => letter.toUpperCase());
+
+    const numeric = text.match(/\b\d{1,2}\/\d{1,2}\/\d{4}/i);
+    if (numeric) return numeric[0].trim();
+
+    const month = text.match(/\b(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\s+\d{1,2},\s+\d{4}/i);
+    if (month) return month[0].trim();
+
+    return text.length <= 48 ? text : "";
   }
 
   function setHeader() {
@@ -73,7 +156,7 @@
 
     els.agencyChips.innerHTML = Object.entries(counts)
       .sort((a, b) => a[0].localeCompare(b[0]))
-      .map(([agency, count]) => `<button class="agency-chip" type="button" data-agency="${escapeAttribute(agency)}">${escapeHtml(agency)} <span>${count}</span></button>`)
+      .map(([agency, count]) => `<button class="agency-chip" type="button" data-agency="${escapeAttribute(agency)}">${agencyBadge(agency)}<span class="agency-chip-name">${escapeHtml(agency)}</span> <span>${count}</span></button>`)
       .join("");
 
     els.agencyChips.querySelectorAll(".agency-chip").forEach((chip) => {
@@ -169,13 +252,26 @@
     const filtered = sortJobs(filterJobs());
     els.resultCount.textContent = `${filtered.length.toLocaleString()} shown`;
     updateAgencyChipState();
+    updateViewState();
 
     if (!filtered.length) {
       els.jobList.innerHTML = '<div class="empty">No jobs match these filters.</div>';
+      els.mapView.innerHTML = '<div class="empty">No jobs match these filters.</div>';
       return;
     }
 
     els.jobList.innerHTML = filtered.slice(0, 300).map(renderJob).join("");
+    renderMap(filtered);
+  }
+
+  function updateViewState() {
+    const isMap = currentView === "map";
+    els.jobList.classList.toggle("hidden", isMap);
+    els.mapView.classList.toggle("hidden", !isMap);
+    els.listViewButton.classList.toggle("active", !isMap);
+    els.mapViewButton.classList.toggle("active", isMap);
+    els.listViewButton.setAttribute("aria-pressed", String(!isMap));
+    els.mapViewButton.setAttribute("aria-pressed", String(isMap));
   }
 
   function updateAgencyChipState() {
@@ -185,7 +281,7 @@
   }
 
   function renderJob(job) {
-    const location = [job.city, job.state].filter(Boolean).join(", ");
+    const location = agencyLocation(job.agency) || [job.city, job.state].filter(Boolean).join(", ");
     const dates = [
       job.posted_date ? `Posted ${formatDate(job.posted_date)}` : "",
       job.closing_date ? `Closes ${formatDate(job.closing_date)}` : "",
@@ -195,7 +291,7 @@
       <article class="job-card">
         <div class="job-main">
           <div class="job-kicker">
-            <span>${escapeHtml(job.agency)}</span>
+            <span>${escapeHtml(agencyFullName(job.agency))}</span>
             ${location ? `<span>${escapeHtml(location)}</span>` : ""}
           </div>
           <h3 class="job-title">
@@ -207,12 +303,152 @@
             ${dates.map((date) => `<span class="tag date-tag">${escapeHtml(date)}</span>`).join("")}
           </div>
         </div>
+        <div class="job-logo-slot">
+          ${agencyLogo(job.agency)}
+        </div>
         <div class="salary-box">
           <div class="salary-label">Pay</div>
           <div class="salary-value">${escapeHtml(job.salary_range_display || job.salary_display || job.salary_text || "Salary not listed")}</div>
           ${salaryRangeRows(job)}
         </div>
       </article>
+    `;
+  }
+
+  function renderMap(filtered) {
+    const groups = mapGroups(filtered);
+    const markers = groups.map((group) => {
+      const meta = getAgencyMeta(group.agency);
+      return `
+        <button class="map-marker" type="button" style="left:${group.point.x}%; top:${group.point.y}%; --agency-color:${escapeAttribute(meta.color)}" title="${escapeAttribute(group.agency)}: ${group.count} jobs" data-agency="${escapeAttribute(group.agency)}">
+          <span>${escapeHtml(meta.short)}</span>
+          <strong>${group.count}</strong>
+        </button>
+      `;
+    }).join("");
+
+    els.mapView.innerHTML = `
+      <div class="map-shell">
+        <div class="map-canvas">
+          <div class="map-land"></div>
+          <div class="map-label west">West</div>
+          <div class="map-label central">Central</div>
+          <div class="map-label east">East</div>
+          ${markers}
+        </div>
+        <div class="map-results">
+          ${groups.map(renderMapGroup).join("")}
+        </div>
+      </div>
+    `;
+
+    els.mapView.querySelectorAll(".map-marker").forEach((marker) => {
+      marker.addEventListener("click", () => {
+        els.agencyFilter.value = marker.dataset.agency;
+        currentView = "list";
+        renderJobs();
+      });
+    });
+  }
+
+  function mapGroups(items) {
+    const groups = new Map();
+
+    items.forEach((job) => {
+      const location = agencyLocation(job.agency) || [job.city, job.state].filter(Boolean).join(", ");
+      const key = `${job.agency}|${location || job.agency}`;
+      const point = pointForJob(job, location);
+
+      if (!groups.has(key)) {
+        groups.set(key, {
+          agency: job.agency,
+          location,
+          point,
+          count: 0,
+          maxPay: 0,
+          examples: [],
+        });
+      }
+
+      const group = groups.get(key);
+      group.count += 1;
+      group.maxPay = Math.max(group.maxPay, comparableAnnualMax(job));
+      if (group.examples.length < 3) group.examples.push(job);
+    });
+
+    return offsetSharedPoints([...groups.values()].sort((a, b) => b.count - a.count || a.agency.localeCompare(b.agency)));
+  }
+
+  function offsetSharedPoints(groups) {
+    const seen = new Map();
+    return groups.map((group) => {
+      const key = `${Math.round(group.point.x)}|${Math.round(group.point.y)}`;
+      const count = seen.get(key) || 0;
+      seen.set(key, count + 1);
+      if (!count) return group;
+
+      const angle = count * 1.9;
+      const radius = 3 + Math.min(count, 4);
+      return {
+        ...group,
+        point: {
+          x: clamp(group.point.x + Math.cos(angle) * radius, 4, 96),
+          y: clamp(group.point.y + Math.sin(angle) * radius, 6, 94),
+        },
+      };
+    });
+  }
+
+  function clamp(value, min, max) {
+    return Math.max(min, Math.min(max, value));
+  }
+
+  function pointForJob(job, location) {
+    return locationPoints[location] || agencyPoints[job.agency] || { x: 50, y: 50 };
+  }
+
+  function renderMapGroup(group) {
+    const pay = group.maxPay ? `Top pay ${money.format(group.maxPay)}` : "Pay varies";
+    return `
+      <article class="map-group">
+        <div class="map-group-head">
+          ${agencyBadge(group.agency)}
+          <div>
+            <strong>${escapeHtml(agencyFullName(group.agency))}</strong>
+            <span>${escapeHtml(group.location || "Multiple locations")} &middot; ${group.count} jobs &middot; ${escapeHtml(pay)}</span>
+          </div>
+        </div>
+        <div class="map-group-jobs">
+          ${group.examples.map((job) => `<a href="${escapeAttribute(job.source_url)}" target="_blank" rel="noreferrer">${escapeHtml(job.title)}</a>`).join("")}
+        </div>
+      </article>
+    `;
+  }
+
+  function getAgencyMeta(agency) {
+    return agencyMeta[agency] || { short: agency.slice(0, 3).toUpperCase(), name: agency, color: "#465a65" };
+  }
+
+  function agencyFullName(agency) {
+    return getAgencyMeta(agency).name;
+  }
+
+  function agencyLocation(agency) {
+    return getAgencyMeta(agency).location || "";
+  }
+
+  function agencyBadge(agency) {
+    const meta = getAgencyMeta(agency);
+    return `<span class="agency-badge" style="--agency-color:${escapeAttribute(meta.color)}" title="${escapeAttribute(meta.name)}">${escapeHtml(meta.short)}</span>`;
+  }
+
+  function agencyLogo(agency) {
+    const meta = getAgencyMeta(agency);
+    if (!meta.logo) return agencyBadge(agency);
+    return `
+      <div class="agency-logo-frame" title="${escapeAttribute(meta.name)}">
+        <img class="agency-logo" src="${escapeAttribute(meta.logo)}" alt="${escapeAttribute(meta.name)} logo" loading="lazy">
+      </div>
     `;
   }
 
@@ -264,6 +500,16 @@
       els.salaryOutput.textContent = Number(els.salaryRange.value) ? money.format(Number(els.salaryRange.value)) : "Any";
       renderJobs();
     }));
+
+    els.listViewButton.addEventListener("click", () => {
+      currentView = "list";
+      renderJobs();
+    });
+
+    els.mapViewButton.addEventListener("click", () => {
+      currentView = "map";
+      renderJobs();
+    });
   }
 
   optionize(els.agencyFilter, uniqueSorted("agency"));

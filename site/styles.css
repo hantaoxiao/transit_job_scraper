@@ -166,9 +166,33 @@ main {
   cursor: pointer;
 }
 
+.agency-badge {
+  display: inline-grid;
+  place-items: center;
+  flex: 0 0 auto;
+  min-width: 34px;
+  height: 26px;
+  padding: 0 7px;
+  color: #ffffff;
+  background: var(--agency-color, #465a65);
+  border-radius: 6px;
+  font-size: 0.72rem;
+  font-weight: 900;
+  line-height: 1;
+}
+
+.agency-chip-name {
+  color: inherit;
+}
+
 .agency-chip span {
   color: var(--muted);
   font-size: 0.82rem;
+}
+
+.agency-chip .agency-badge {
+  color: #ffffff;
+  font-size: 0.68rem;
 }
 
 .agency-chip.active {
@@ -179,6 +203,10 @@ main {
 
 .agency-chip.active span {
   color: #dbeee7;
+}
+
+.agency-chip.active .agency-badge {
+  color: #ffffff;
 }
 
 .results-heading {
@@ -195,15 +223,54 @@ main {
   font-size: 1.05rem;
 }
 
+.results-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+.view-toggle {
+  display: inline-grid;
+  grid-template-columns: 1fr 1fr;
+  min-width: 132px;
+  padding: 3px;
+  background: #e9efed;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+.view-button {
+  min-height: 30px;
+  color: var(--muted);
+  background: transparent;
+  border: 0;
+  border-radius: 6px;
+  cursor: pointer;
+  font-weight: 800;
+}
+
+.view-button.active {
+  color: var(--ink);
+  background: #ffffff;
+  box-shadow: 0 1px 4px rgba(21, 36, 33, 0.12);
+}
+
 .job-list {
   display: grid;
   gap: 10px;
 }
 
+.hidden {
+  display: none !important;
+}
+
 .job-card {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 240px;
+  grid-template-columns: minmax(0, 1fr) 132px 240px;
   gap: 18px;
+  align-items: center;
   padding: 18px;
   background: var(--surface);
   border: 1px solid var(--line);
@@ -214,6 +281,7 @@ main {
 .job-kicker {
   display: flex;
   flex-wrap: wrap;
+  align-items: center;
   gap: 8px;
   margin-bottom: 7px;
   color: var(--muted);
@@ -257,6 +325,32 @@ main {
 .date-tag {
   color: #45514f;
   background: #f3f5f4;
+}
+
+.job-logo-slot {
+  display: grid;
+  place-items: center;
+  min-height: 86px;
+  padding-left: 16px;
+  border-left: 1px solid var(--line);
+}
+
+.agency-logo-frame {
+  display: grid;
+  place-items: center;
+  width: 112px;
+  height: 68px;
+  padding: 12px;
+  background: #ffffff;
+  border: 1px solid #dfe6e3;
+  border-radius: 8px;
+}
+
+.agency-logo {
+  display: block;
+  max-width: 88px;
+  max-height: 44px;
+  object-fit: contain;
 }
 
 .salary-box {
@@ -303,6 +397,153 @@ main {
   border-radius: 8px;
 }
 
+.map-view {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  box-shadow: var(--shadow);
+  overflow: hidden;
+}
+
+.map-shell {
+  display: grid;
+  grid-template-columns: minmax(0, 1.25fr) minmax(320px, 0.75fr);
+  min-height: 620px;
+}
+
+.map-canvas {
+  position: relative;
+  min-height: 620px;
+  background:
+    linear-gradient(90deg, rgba(255,255,255,0.66) 1px, transparent 1px),
+    linear-gradient(0deg, rgba(255,255,255,0.66) 1px, transparent 1px),
+    #dce9e5;
+  background-size: 12.5% 12.5%;
+  overflow: hidden;
+}
+
+.map-land {
+  position: absolute;
+  inset: 7% 7% 9%;
+  background: #f9fbfa;
+  border: 1px solid #c7d3d0;
+  border-radius: 48% 52% 43% 57% / 45% 35% 65% 55%;
+  box-shadow: inset 0 0 0 12px rgba(238, 243, 241, 0.72);
+}
+
+.map-label {
+  position: absolute;
+  color: rgba(47, 69, 65, 0.42);
+  font-size: 0.74rem;
+  font-weight: 850;
+  text-transform: uppercase;
+}
+
+.map-label.west {
+  left: 18%;
+  top: 12%;
+}
+
+.map-label.central {
+  left: 47%;
+  top: 18%;
+}
+
+.map-label.east {
+  right: 14%;
+  top: 16%;
+}
+
+.map-marker {
+  position: absolute;
+  z-index: 2;
+  display: grid;
+  grid-template-columns: auto auto;
+  gap: 5px;
+  align-items: center;
+  min-height: 36px;
+  padding: 5px 8px;
+  color: #ffffff;
+  background: var(--agency-color, #465a65);
+  border: 2px solid #ffffff;
+  border-radius: 999px;
+  box-shadow: 0 10px 22px rgba(21, 36, 33, 0.2);
+  cursor: pointer;
+  transform: translate(-50%, -50%);
+}
+
+.map-marker span {
+  font-size: 0.68rem;
+  font-weight: 900;
+}
+
+.map-marker strong {
+  display: inline-grid;
+  place-items: center;
+  min-width: 24px;
+  height: 24px;
+  padding: 0 5px;
+  color: var(--agency-color, #465a65);
+  background: #ffffff;
+  border-radius: 999px;
+  font-size: 0.78rem;
+}
+
+.map-results {
+  display: grid;
+  align-content: start;
+  gap: 10px;
+  max-height: 620px;
+  padding: 14px;
+  overflow: auto;
+  border-left: 1px solid var(--line);
+}
+
+.map-group {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  background: #ffffff;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+.map-group-head {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 10px;
+  align-items: start;
+}
+
+.map-group-head strong,
+.map-group-head span {
+  display: block;
+}
+
+.map-group-head span {
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: 0.82rem;
+  line-height: 1.35;
+}
+
+.map-group-jobs {
+  display: grid;
+  gap: 6px;
+}
+
+.map-group-jobs a {
+  color: var(--ink);
+  font-size: 0.88rem;
+  font-weight: 720;
+  line-height: 1.25;
+  text-decoration: none;
+}
+
+.map-group-jobs a:hover {
+  color: var(--blue);
+}
+
 @media (max-width: 1120px) {
   .toolbar {
     grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -328,9 +569,28 @@ main {
     grid-template-columns: 1fr;
   }
 
+  .job-logo-slot {
+    justify-items: start;
+    min-height: auto;
+    padding-left: 0;
+    padding-top: 12px;
+    border-left: 0;
+    border-top: 1px solid var(--line);
+  }
+
   .salary-box {
     padding-left: 0;
     padding-top: 12px;
+    border-left: 0;
+    border-top: 1px solid var(--line);
+  }
+
+  .map-shell {
+    grid-template-columns: 1fr;
+  }
+
+  .map-results {
+    max-height: none;
     border-left: 0;
     border-top: 1px solid var(--line);
   }
@@ -349,5 +609,24 @@ main {
   .search-field,
   .salary-field {
     grid-column: auto;
+  }
+
+  .results-heading,
+  .results-actions {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .view-toggle {
+    width: 100%;
+  }
+
+  .map-canvas {
+    min-height: 460px;
+  }
+
+  .map-marker {
+    min-height: 32px;
+    padding: 4px 6px;
   }
 }

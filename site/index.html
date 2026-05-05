@@ -79,9 +79,16 @@
       <section class="results" aria-label="Job results">
         <div class="results-heading">
           <h2>Open positions</h2>
-          <span id="resultCount">0 shown</span>
+          <div class="results-actions">
+            <span id="resultCount">0 shown</span>
+            <div class="view-toggle" aria-label="View mode">
+              <button id="listViewButton" class="view-button active" type="button" aria-pressed="true">List</button>
+              <button id="mapViewButton" class="view-button" type="button" aria-pressed="false">Map</button>
+            </div>
+          </div>
         </div>
         <div id="jobList" class="job-list"></div>
+        <div id="mapView" class="map-view hidden" aria-label="Map of filtered jobs"></div>
       </section>
     </main>
 
