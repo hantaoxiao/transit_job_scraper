@@ -88,7 +88,7 @@ def run_all_scrapers() -> list[dict]:
             all_jobs.extend(jobs)
             print(f"Found {len(jobs)} jobs")
         except Exception as exc:
-            print(f"Failed to scrape {agency['agency']} ({agency['jobs_url']}): {type(exc).__name__}: {exc}")
+            print(f"Skipped {agency['agency']}: {exc}")
 
     return all_jobs
 

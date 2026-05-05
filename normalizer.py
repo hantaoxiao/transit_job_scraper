@@ -10,6 +10,36 @@ def clean_text(text: Optional[str]) -> str:
     return " ".join(str(text).split()).strip()
 
 
+def clean_date_text(text: Optional[str]) -> str:
+    text = clean_text(text)
+    if not text:
+        return ""
+
+    status_match = re.search(r"\b(continuous|open until filled|apply immediately)\b", text, flags=re.IGNORECASE)
+    if status_match and status_match.start() < 40:
+        return status_match.group(1).title()
+
+    numeric_date = re.search(
+        r"\b\d{1,2}/\d{1,2}/\d{4}",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if numeric_date:
+        return clean_text(numeric_date.group(0))
+
+    month_date = re.search(
+        r"\b(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|"
+        r"Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\s+"
+        r"\d{1,2},\s+\d{4}",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if month_date:
+        return clean_text(month_date.group(0))
+
+    return text if len(text) <= 48 else ""
+
+
 def make_job_id(agency: str, title: str, source_url: str) -> str:
     raw = f"{agency}|{title}|{source_url}".lower()
     return hashlib.md5(raw.encode("utf-8")).hexdigest()
@@ -336,6 +366,8 @@ def normalize_job(
     description = clean_text(description)
     raw_context = clean_text(raw_context)
     salary_text = clean_text(salary_text)
+    posted_date = clean_date_text(posted_date)
+    closing_date = clean_date_text(closing_date)
     if not salary_has_money(salary_text):
         salary_text = extract_salary(raw_context or description) or salary_text
     salary_fields = parse_salary(salary_text)

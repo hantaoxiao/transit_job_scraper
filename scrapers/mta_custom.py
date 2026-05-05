@@ -407,23 +407,31 @@ def _wait_for_mta_browser_page(page, url: str, selector: Optional[str] = None) -
 
 def _scrape_mta_browser(agency: dict) -> list[dict]:
     try:
+        from playwright.sync_api import Error as PlaywrightError
         from playwright.sync_api import sync_playwright
     except ImportError as exc:
         raise RuntimeError(
-            "MTA blocked requests. Install the browser fallback with: "
-            "pip install playwright && playwright install chromium"
+            "MTA needs the browser fallback. Install it with: playwright install chromium"
         ) from exc
 
     summaries = []
     cached_jobs = _load_existing_mta_cache(agency)
 
     with sync_playwright() as p:
-        context = p.chromium.launch_persistent_context(
-            user_data_dir=str(BROWSER_PROFILE_DIR),
-            headless=False,
-            channel="chrome",
-            viewport={"width": 1440, "height": 1000},
-        )
+        try:
+            context = p.chromium.launch_persistent_context(
+                user_data_dir=str(BROWSER_PROFILE_DIR),
+                headless=False,
+                viewport={"width": 1440, "height": 1000},
+            )
+        except PlaywrightError as exc:
+            if cached_jobs:
+                print(f"MTA browser fallback unavailable; using {len(cached_jobs)} cached MTA jobs")
+                return _dedupe_jobs(list(cached_jobs.values()))
+            raise RuntimeError(
+                "MTA needs the browser fallback. Run: playwright install chromium"
+            ) from exc
+
         page = context.new_page()
 
         _wait_for_mta_browser_page(page, HOME_URL, "a[href^='/search/']")

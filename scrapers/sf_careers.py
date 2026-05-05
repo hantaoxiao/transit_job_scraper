@@ -1,3 +1,4 @@
+import re
 from urllib.parse import urljoin
 
 import requests
@@ -38,20 +39,15 @@ def _label_value(text: str, label: str) -> str:
         "Work Hours",
         "Role description",
     )
-    lookahead = "|".join(item for item in labels if item != label)
-    marker = f"{label}:"
-    start = text.find(marker)
-    if start == -1:
+    lookahead = "|".join(re.escape(item) for item in labels if item != label)
+    match = re.search(
+        rf"\b{re.escape(label)}\s*:?\s*(.+?)(?=\s+(?:{lookahead})\s*:?\b|$)",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if not match:
         return ""
-    start += len(marker)
-
-    end = len(text)
-    for next_label in lookahead.split("|"):
-        idx = text.find(f"{next_label}:", start)
-        if idx != -1:
-            end = min(end, idx)
-
-    return clean_text(text[start:end])
+    return clean_text(match.group(1))
 
 
 def _role_detail(session: requests.Session, url: str) -> dict:
