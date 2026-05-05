@@ -231,6 +231,27 @@ main {
   gap: 10px;
 }
 
+.page-size-control {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 36px;
+  color: var(--muted);
+  font-size: 0.86rem;
+  font-weight: 760;
+}
+
+.page-size-control select {
+  min-width: 72px;
+  min-height: 34px;
+  padding: 0 28px 0 10px;
+  color: var(--ink);
+  background: #ffffff;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  font: inherit;
+}
+
 .view-toggle {
   display: inline-grid;
   grid-template-columns: 1fr 1fr;
@@ -260,6 +281,41 @@ main {
 .job-list {
   display: grid;
   gap: 10px;
+}
+
+.pagination {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  margin-top: 14px;
+}
+
+.page-button {
+  min-width: 92px;
+  min-height: 36px;
+  padding: 0 14px;
+  color: #ffffff;
+  background: var(--green);
+  border: 1px solid var(--green);
+  border-radius: 8px;
+  cursor: pointer;
+  font-weight: 850;
+}
+
+.page-button:disabled {
+  color: #7d8a86;
+  background: #edf2f0;
+  border-color: var(--line);
+  cursor: not-allowed;
+}
+
+.page-status {
+  min-width: 112px;
+  color: var(--muted);
+  font-size: 0.9rem;
+  font-weight: 760;
+  text-align: center;
 }
 
 .hidden {
@@ -619,6 +675,15 @@ main {
 
   .view-toggle {
     width: 100%;
+  }
+
+  .page-size-control,
+  .pagination {
+    width: 100%;
+  }
+
+  .page-size-control select {
+    flex: 1;
   }
 
   .map-canvas {

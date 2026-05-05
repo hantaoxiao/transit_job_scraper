@@ -3,7 +3,7 @@ from urllib.parse import urlencode
 import requests
 from bs4 import BeautifulSoup
 
-from normalizer import clean_text, normalize_job
+from normalizer import clean_text, extract_salary, normalize_job
 
 
 HEADERS = {
@@ -34,8 +34,19 @@ def _detail_url(job_id: str) -> str:
     return f"{DETAIL_BASE}?{urlencode(params)}"
 
 
+def _detail_text(session: requests.Session, url: str) -> str:
+    try:
+        response = session.get(url, headers=HEADERS, timeout=30)
+        response.raise_for_status()
+    except requests.RequestException:
+        return ""
+    soup = BeautifulSoup(response.text, "lxml")
+    return clean_text(soup.get_text(" ", strip=True))
+
+
 def scrape_peoplesoft_wmata(agency: dict) -> list[dict]:
-    response = requests.get(agency["jobs_url"], headers=HEADERS, timeout=30)
+    session = requests.Session()
+    response = session.get(agency["jobs_url"], headers=HEADERS, timeout=30)
     response.raise_for_status()
 
     soup = BeautifulSoup(response.text, "lxml")
@@ -63,16 +74,21 @@ def scrape_peoplesoft_wmata(agency: dict) -> list[dict]:
         elif location.startswith("MD"):
             city, state = "Landover", "MD"
 
-        raw_context = clean_text(" ".join([title, requisition_id, location, posted_date]))
+        source_url = _detail_url(requisition_id)
+        description = _detail_text(session, source_url)
+        salary_text = extract_salary(description)
+        raw_context = clean_text(" ".join([title, requisition_id, location, posted_date, description]))
         jobs.append(
             normalize_job(
                 title=title,
                 agency=agency["agency"],
                 city=city,
                 state=state,
-                source_url=_detail_url(requisition_id),
+                source_url=source_url,
                 platform=agency["platform"],
+                salary_text=salary_text,
                 posted_date=posted_date,
+                description=description,
                 raw_context=raw_context,
                 extra_fields={"requisition_id": requisition_id},
             )

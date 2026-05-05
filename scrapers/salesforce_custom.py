@@ -77,20 +77,32 @@ def _extract_field(text: str, label: str) -> str:
 
 
 def _detail_page_text(session: requests.Session, source_url: str) -> str:
+    def useful(text: str) -> bool:
+        return bool(re.search(r"\b(Job Details|Salary Range|Starting pay rate|top pay rate)\b", text, flags=re.IGNORECASE))
+
+    def page_text(url: str) -> str:
+        try:
+            response = session.get(url, headers=HEADERS, timeout=30)
+            response.raise_for_status()
+        except requests.RequestException:
+            return ""
+        return clean_text(BeautifulSoup(response.text, "lxml").get_text(" ", strip=True))
+
     parsed = urlparse(source_url)
     query = parse_qs(parsed.query)
     page = (query.get("page") or [""])[0]
     job_ids = (query.get("jobIds") or query.get("JobIds") or [""])[0]
     if page and job_ids:
-        direct_url = urljoin(source_url, f"{page}?{parsed.query.replace('jobIds=', 'JobIds=')}")
-        try:
-            response = session.get(direct_url, headers=HEADERS, timeout=30)
-            response.raise_for_status()
-            direct_text = clean_text(BeautifulSoup(response.text, "lxml").get_text(" ", strip=True))
-            if len(direct_text) > 200:
-                return direct_text
-        except requests.RequestException:
-            pass
+        iframe_query = parsed.query.replace("jobIds=", "JobIds=")
+        iframe_url = urljoin(source_url, f"{page}1?{iframe_query}")
+        iframe_text = page_text(iframe_url)
+        if useful(iframe_text):
+            return iframe_text
+
+        direct_url = urljoin(source_url, f"{page}?{iframe_query}")
+        direct_text = page_text(direct_url)
+        if useful(direct_text):
+            return direct_text
 
     try:
         response = session.get(source_url, headers=HEADERS, timeout=30)
@@ -102,12 +114,9 @@ def _detail_page_text(session: requests.Session, source_url: str) -> str:
     iframe = soup.find("iframe", src=True)
     if iframe:
         iframe_url = urljoin(source_url, iframe["src"])
-        try:
-            response = session.get(iframe_url, headers=HEADERS, timeout=30)
-            response.raise_for_status()
-            soup = BeautifulSoup(response.text, "lxml")
-        except requests.RequestException:
-            pass
+        iframe_text = page_text(iframe_url)
+        if iframe_text:
+            return iframe_text
 
     return clean_text(soup.get_text(" ", strip=True))
 

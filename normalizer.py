@@ -49,9 +49,53 @@ def extract_salary(text: Optional[str]) -> str:
     text = clean_text(text)
     if not text:
         return ""
+    text = re.sub(r"\bCompensatio\s+n\b", "Compensation", text, flags=re.IGNORECASE)
+    text = re.sub(r"\$\s*(\d{1,3})\s*,\s*(\d{3})", r"$\1,\2", text)
+
+    stop_labels = (
+        r"deadline|opening date|closing date|job grade|dept/div|department|location|regulated|"
+        r"union affiliation|job description|description|overall description|specific responsibilities|"
+        r"qualifications|requirements|benefits|why join|nearest major|apply now|find similar jobs|"
+        r"job location|additional|reports to|responsibilities|summary|interview selection process"
+    )
+
+    annual_amount = re.search(
+        r"(\$\s*\d[\d,.]*\s*[kK]?\s*(?:[-–]|to)\s*\$?\s*\d[\d,.]*\s*[kK]?\s+Annually|\$\s*\d[\d,.]*\s*[kK]?\s+Annually)",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if annual_amount:
+        return clean_text(annual_amount.group(1))
+
+    labeled_salary_range = re.search(
+        r"\bsalary\s+range\s*:?\s*(\$\s*\d[\d,.]*\s*[kK]?(?:\s*(?:[-–]|to)\s*\$?\s*\d[\d,.]*\s*[kK]?)?(?:\s*(?:hourly|annually|per\s+hour|/hour|/hr))?)",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if labeled_salary_range:
+        return clean_text(labeled_salary_range.group(1))
+
+    hourly_rate = re.search(
+        rf"\b(?:hourly\s+rate|starting\s+pay\s+rate|pay\s+rate|rate\s+of\s+pay)\s*:?\s*-?\s*(.+?)(?=\s+(?:{stop_labels})\s*:?\b|$)",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if hourly_rate and "$" in hourly_rate.group(1):
+        section = hourly_rate.group(1)
+        money_matches = list(re.finditer(r"\$\s*\d[\d,.]*\s*[kK]?(?:\s*\([^)]*\))?", section))
+        if money_matches:
+            return clean_text(f"Hourly Rate: {section[:money_matches[-1].end()]}")
+
+    hourly_range = re.search(
+        r"\$\s*\d[\d,.]*\s*/?\s*(?:hr|hour)\s*(?:[-–]|to)\s*\$?\s*\d[\d,.]*\s*/?\s*(?:hr|hour)",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if hourly_range:
+        return clean_text(hourly_range.group(0))
 
     starting_salary = re.search(
-        r"\bstarting salary\s*:?\s*-?\s*(\$\s*\d[\d,.]*)",
+        r"\bstarting salary\s*(?:of|is|:)?\s*-?\s*(\$\s*\d[\d,.]*)",
         text,
         flags=re.IGNORECASE,
     )
@@ -66,28 +110,34 @@ def extract_salary(text: Optional[str]) -> str:
     if explicit_range:
         return clean_text(explicit_range.group(1))
 
-    stop_labels = (
-        r"deadline|dept/div|department|location|regulated|union affiliation|job description|"
-        r"description|overall description|specific responsibilities|qualifications|why join|"
-        r"nearest major|apply now|find similar jobs|job location|additional"
+    currency_range = re.search(
+        r"\$\s*\d[\d,.]*\s*[kK]?\s*(?:[-–]|to)\s*\$?\s*\d[\d,.]*\s*[kK]?",
+        text,
+        flags=re.IGNORECASE,
     )
+    if currency_range and re.search(r"\b(salary|compensation|posted range|pay|rate|wage)\b", text, flags=re.IGNORECASE):
+        return clean_text(currency_range.group(0))
+
     salary_section = re.search(
-        rf"(?:starting salary|salary range|pay range|annual salary|base salary|compensation)\s*(?:is|:)?\s*-?\s*(.+?)(?=\s+(?:{stop_labels})\s*:?\s+|$)",
+        rf"(?:starting salary|salary range|pay range|starting pay rate|pay rate|hourly rate|annual salary|base salary|earnings potential|wage progression|compensation)\s*(?:is|:|-)?\s*-?\s*(.+?)(?=\s+(?:{stop_labels})\s*:?\b|$)",
         text,
         flags=re.IGNORECASE,
     ) or re.search(
-        rf"\bsalary\s*:\s*-?\s*(.+?)(?=\s+(?:{stop_labels})\s*:?\s+|$)",
+        rf"\bsalary\s*(?:is|:|-)?\s*-?\s*(.+?)(?=\s+(?:{stop_labels})\s*:?\b|$)",
         text,
         flags=re.IGNORECASE,
     )
     if salary_section:
         section = salary_section.group(1)
-        if "$" not in section:
-            return ""
-        money_matches = list(re.finditer(r"\$?\s*\d[\d,.]*\s*[kK]?", section))
+        money_matches = list(re.finditer(r"\$\s*\d[\d,.]*\s*[kK]?", section))
+        if not money_matches:
+            money_matches = list(re.finditer(r"\b\d{2,3}(?:,\d{3})+(?:\.\d+)?\b|\b\d{2,3}\.\d{2,6}\b", section))
         if money_matches:
             end = money_matches[-1].end()
-            return clean_text(section[:end])
+            extracted = clean_text(section[:end])
+            if "$" not in extracted:
+                extracted = f"Compensation: {extracted}"
+            return extracted
 
     pre_description = re.search(
         r"(.+?)(?=\s+overall description\b)",
@@ -128,6 +178,7 @@ def _parse_money(value: str) -> Optional[float]:
     multiplier = 1000 if re.search(r"[kK]\s*$", value.strip()) else 1
     value = value.replace("$", "").replace(",", "").strip()
     value = re.sub(r"[kK]\s*$", "", value).strip()
+    value = value.rstrip(".")
 
     if re.fullmatch(r"\d{1,3}(?:\.\d{3}){2,}", value):
         value = value.replace(".", ",").replace(",", "")
@@ -146,8 +197,14 @@ def _money_values(text: str) -> list[float]:
         text,
         flags=re.IGNORECASE,
     )
+    labeled_bare_tokens = []
+    if re.search(r"\b(salary|compensation|pay rate|hourly rate|rate of pay)\b", text, flags=re.IGNORECASE):
+        labeled_bare_tokens = re.findall(
+            r"\b\d{2,3}(?:,\d{3})+(?:\.\d+)?\b|\b\d{2,3}\.\d{2,6}\b",
+            text,
+        )
 
-    for token in [*dollar_tokens, *bare_range_tokens]:
+    for token in [*dollar_tokens, *bare_range_tokens, *labeled_bare_tokens]:
 
         value = _parse_money(token)
         if value is None:

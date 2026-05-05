@@ -81,6 +81,15 @@
           <h2>Open positions</h2>
           <div class="results-actions">
             <span id="resultCount">0 shown</span>
+            <label class="page-size-control">
+              <span>Show</span>
+              <select id="pageSizeSelect">
+                <option value="10" selected>10</option>
+                <option value="25">25</option>
+                <option value="50">50</option>
+                <option value="100">100</option>
+              </select>
+            </label>
             <div class="view-toggle" aria-label="View mode">
               <button id="listViewButton" class="view-button active" type="button" aria-pressed="true">List</button>
               <button id="mapViewButton" class="view-button" type="button" aria-pressed="false">Map</button>
@@ -88,6 +97,7 @@
           </div>
         </div>
         <div id="jobList" class="job-list"></div>
+        <nav id="pagination" class="pagination" aria-label="Job result pages"></nav>
         <div id="mapView" class="map-view hidden" aria-label="Map of filtered jobs"></div>
       </section>
     </main>

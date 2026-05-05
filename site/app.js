@@ -15,6 +15,8 @@
     includeUnknownSalary: document.getElementById("includeUnknownSalary"),
     agencyChips: document.getElementById("agencyChips"),
     resultCount: document.getElementById("resultCount"),
+    pageSizeSelect: document.getElementById("pageSizeSelect"),
+    pagination: document.getElementById("pagination"),
     jobList: document.getElementById("jobList"),
     mapView: document.getElementById("mapView"),
     listViewButton: document.getElementById("listViewButton"),
@@ -22,6 +24,7 @@
   };
 
   let currentView = "list";
+  let currentPage = 1;
 
   const agencyMeta = {
     "AC Transit": { short: "AC", name: "AC Transit", color: "#0f6b50", location: "Oakland, CA", logo: "assets/agency-logos/ac-transit.png" },
@@ -162,6 +165,7 @@
     els.agencyChips.querySelectorAll(".agency-chip").forEach((chip) => {
       chip.addEventListener("click", () => {
         els.agencyFilter.value = chip.dataset.agency;
+        resetPage();
         renderJobs();
       });
     });
@@ -181,6 +185,161 @@
     return comparableAnnual(job) >= minSalary;
   }
 
+  const searchAliases = {
+    analyst: [
+      "analysis",
+      "analytics",
+      "analytical",
+      "analyze",
+      "data",
+      "data science",
+      "business intelligence",
+      "metrics",
+      "reporting",
+      "dashboard",
+      "visualization",
+      "gis",
+      "research",
+      "planning",
+      "planner",
+      "forecast",
+      "modeling",
+      "performance",
+      "budget",
+      "finance",
+      "strategy",
+      "policy",
+    ],
+    analytics: ["analyst", "analysis", "data", "data science", "metrics", "reporting", "dashboard", "visualization"],
+    data: ["analytics", "analysis", "data science", "business intelligence", "dashboard", "visualization", "gis", "reporting"],
+    plan: ["planning", "planner", "plans", "strategy", "strategic", "forecast", "program", "project"],
+    planner: ["planning", "strategy", "policy", "forecast", "analysis", "project", "program"],
+    planning: ["planner", "strategy", "policy", "forecast", "analysis", "project", "program"],
+    engineer: ["engineering", "technical", "design", "infrastructure", "systems"],
+    mechanic: ["maintenance", "technician", "repair", "equipment", "vehicle"],
+    driver: ["operator", "bus operator", "train operator"],
+    operator: ["driver", "operations", "bus operator", "train operator"],
+  };
+
+  function searchText(job) {
+    return [
+      job.title,
+      job.agency,
+      agencyFullName(job.agency),
+      agencyLocation(job.agency),
+      job.city,
+      job.state,
+      job.category,
+      job.ai_sort_category,
+      job.ai_sort_seniority,
+      job.department,
+      job.employment_type,
+      job.raw_context,
+      job.description,
+      job.full_job_description,
+      job.all_meaningful_info,
+    ]
+      .join(" ")
+      .toLowerCase();
+  }
+
+  function queryTokens(query) {
+    return query
+      .toLowerCase()
+      .split(/[^a-z0-9$]+/)
+      .map((token) => token.trim())
+      .filter((token) => token.length > 1);
+  }
+
+  function tokenVariants(token) {
+    const variants = new Set([token]);
+    if (token.endsWith("s") && token.length > 3) variants.add(token.slice(0, -1));
+    if (token.endsWith("er") && token.length > 5) variants.add(token.slice(0, -2));
+    if (token.endsWith("or") && token.length > 5) variants.add(token.slice(0, -2));
+    (searchAliases[token] || []).forEach((alias) => variants.add(alias));
+    return [...variants];
+  }
+
+  function fieldText(job, fields) {
+    return fields.map((field) => String(job[field] || "").toLowerCase()).join(" ");
+  }
+
+  function containsSearchTerm(text, term) {
+    if (!term) return false;
+    if (term.includes(" ")) return text.includes(term);
+    const escaped = term.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    if (new RegExp(`\\b${escaped}\\b`, "i").test(text)) return true;
+    return term.length >= 4 && new RegExp(`\\b${escaped}[a-z0-9-]*\\b`, "i").test(text);
+  }
+
+  function isPlanningQuery(token) {
+    return ["plan", "planner", "planning", "plans"].includes(token);
+  }
+
+  function matchesPlanningFamily(text) {
+    return /\b(plan|plans|planner|planners|planning)\b/i.test(text);
+  }
+
+  function searchScore(job, query) {
+    const normalizedQuery = query.trim().toLowerCase();
+    if (!normalizedQuery) return 0;
+
+    const tokens = queryTokens(normalizedQuery);
+    const planningFamilyQuery = tokens.length === 1 && isPlanningQuery(tokens[0]);
+    const title = String(job.title || "").toLowerCase();
+    const category = fieldText(job, ["category", "ai_sort_category", "ai_sort_seniority", "department"]);
+    const body = searchText(job);
+    let score = 0;
+
+    if (planningFamilyQuery) {
+      if (matchesPlanningFamily(title)) score += 120;
+      if (matchesPlanningFamily(category)) score += 60;
+      if (matchesPlanningFamily(body)) score += 30;
+    } else {
+      if (title.includes(normalizedQuery)) score += 120;
+      if (category.includes(normalizedQuery)) score += 60;
+      if (body.includes(normalizedQuery)) score += 30;
+    }
+
+    tokens.forEach((token) => {
+      const variants = tokenVariants(token);
+      let tokenScore = 0;
+
+      if (isPlanningQuery(token)) {
+        if (matchesPlanningFamily(title)) tokenScore = Math.max(tokenScore, 110);
+        if (matchesPlanningFamily(category)) tokenScore = Math.max(tokenScore, 70);
+      }
+
+      variants.forEach((variant) => {
+        const phraseAlias = variant.includes(" ");
+        if (containsSearchTerm(title, variant)) tokenScore = Math.max(tokenScore, variant === token ? 80 : phraseAlias ? 240 : 70);
+        else if (containsSearchTerm(category, variant)) tokenScore = Math.max(tokenScore, variant === token ? 44 : phraseAlias ? 62 : 44);
+        else if (containsSearchTerm(body, variant)) tokenScore = Math.max(tokenScore, variant === token ? 24 : 16);
+      });
+      score += tokenScore;
+    });
+
+    return score;
+  }
+
+  function matchesSearch(job, query) {
+    const tokens = queryTokens(query);
+    if (!tokens.length) return true;
+    if (tokens.length === 1 && isPlanningQuery(tokens[0])) {
+      const title = String(job.title || "").toLowerCase();
+      const category = fieldText(job, ["category", "ai_sort_category", "ai_sort_seniority", "department"]);
+      return matchesPlanningFamily(title) || matchesPlanningFamily(category);
+    }
+
+    const body = searchText(job);
+    const minimumScore = tokens.length > 1 ? tokens.length * 30 : 40;
+
+    return (
+      searchScore(job, query) >= minimumScore &&
+      tokens.every((token) => tokenVariants(token).some((variant) => containsSearchTerm(body, variant)))
+    );
+  }
+
   function filterJobs() {
     const query = els.searchInput.value.trim().toLowerCase();
     const agency = els.agencyFilter.value;
@@ -190,20 +349,8 @@
     const includeUnknown = els.includeUnknownSalary.checked;
 
     return jobs.filter((job) => {
-      const haystack = [
-        job.title,
-        job.agency,
-        job.city,
-        job.state,
-        job.category,
-        job.ai_sort_seniority,
-        job.raw_context,
-      ]
-        .join(" ")
-        .toLowerCase();
-
       return (
-        (!query || haystack.includes(query)) &&
+        (!query || matchesSearch(job, query)) &&
         (!agency || job.agency === agency) &&
         (!category || job.category === category) &&
         (!seniority || job.ai_sort_seniority === seniority) &&
@@ -214,10 +361,16 @@
 
   function sortJobs(items) {
     const sort = els.sortSelect.value;
+    const query = els.searchInput.value.trim().toLowerCase();
     const sorted = [...items];
     const textCompare = (a, b, field) => String(a[field] || "").localeCompare(String(b[field] || ""));
 
     sorted.sort((a, b) => {
+      if (query) {
+        const relevance = searchScore(b, query) - searchScore(a, query);
+        if (relevance) return relevance;
+      }
+
       if (sort === "closing_asc") {
         const aDate = dateValue(a.closing_date);
         const bDate = dateValue(b.closing_date);
@@ -250,24 +403,73 @@
 
   function renderJobs() {
     const filtered = sortJobs(filterJobs());
-    els.resultCount.textContent = `${filtered.length.toLocaleString()} shown`;
+    const pageSize = selectedPageSize();
+    const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize));
+    currentPage = Math.min(Math.max(currentPage, 1), totalPages);
+    const startIndex = (currentPage - 1) * pageSize;
+    const pageItems = filtered.slice(startIndex, startIndex + pageSize);
+
+    els.resultCount.textContent = resultCountText(filtered.length, startIndex, pageItems.length);
     updateAgencyChipState();
     updateViewState();
 
     if (!filtered.length) {
       els.jobList.innerHTML = '<div class="empty">No jobs match these filters.</div>';
       els.mapView.innerHTML = '<div class="empty">No jobs match these filters.</div>';
+      els.pagination.innerHTML = "";
       return;
     }
 
-    els.jobList.innerHTML = filtered.slice(0, 300).map(renderJob).join("");
+    els.jobList.innerHTML = pageItems.map(renderJob).join("");
+    renderPagination(filtered.length, pageSize, totalPages);
     renderMap(filtered);
+  }
+
+  function selectedPageSize() {
+    return Number(els.pageSizeSelect.value) || 10;
+  }
+
+  function resultCountText(total, startIndex, pageCount) {
+    if (!total) return "0 shown";
+    const start = startIndex + 1;
+    const end = startIndex + pageCount;
+    return `${start.toLocaleString()}-${end.toLocaleString()} of ${total.toLocaleString()}`;
+  }
+
+  function renderPagination(total, pageSize, totalPages) {
+    if (total <= pageSize) {
+      els.pagination.innerHTML = "";
+      return;
+    }
+
+    els.pagination.innerHTML = `
+      <button class="page-button" type="button" data-page-action="prev" ${currentPage === 1 ? "disabled" : ""}>Previous</button>
+      <span class="page-status">Page ${currentPage.toLocaleString()} of ${totalPages.toLocaleString()}</span>
+      <button class="page-button" type="button" data-page-action="next" ${currentPage === totalPages ? "disabled" : ""}>Next</button>
+    `;
+
+    els.pagination.querySelectorAll(".page-button").forEach((button) => {
+      button.addEventListener("click", () => {
+        currentPage += button.dataset.pageAction === "next" ? 1 : -1;
+        renderJobs();
+        scrollToResults();
+      });
+    });
+  }
+
+  function resetPage() {
+    currentPage = 1;
+  }
+
+  function scrollToResults() {
+    document.querySelector(".results").scrollIntoView({ behavior: "smooth", block: "start" });
   }
 
   function updateViewState() {
     const isMap = currentView === "map";
     els.jobList.classList.toggle("hidden", isMap);
     els.mapView.classList.toggle("hidden", !isMap);
+    els.pagination.classList.toggle("hidden", isMap);
     els.listViewButton.classList.toggle("active", !isMap);
     els.mapViewButton.classList.toggle("active", isMap);
     els.listViewButton.setAttribute("aria-pressed", String(!isMap));
@@ -346,6 +548,7 @@
       marker.addEventListener("click", () => {
         els.agencyFilter.value = marker.dataset.agency;
         currentView = "list";
+        resetPage();
         renderJobs();
       });
     });
@@ -494,10 +697,12 @@
       els.sortSelect,
       els.salaryRange,
       els.includeUnknownSalary,
+      els.pageSizeSelect,
     ];
 
     inputs.forEach((input) => input.addEventListener("input", () => {
       els.salaryOutput.textContent = Number(els.salaryRange.value) ? money.format(Number(els.salaryRange.value)) : "Any";
+      resetPage();
       renderJobs();
     }));
 
