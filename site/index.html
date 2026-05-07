@@ -34,6 +34,13 @@
         </label>
 
         <label class="field">
+          <span>State</span>
+          <select id="stateFilter">
+            <option value="">All states</option>
+          </select>
+        </label>
+
+        <label class="field">
           <span>Category</span>
           <select id="categoryFilter">
             <option value="">All categories</option>
@@ -44,6 +51,15 @@
           <span>Seniority</span>
           <select id="seniorityFilter">
             <option value="">All levels</option>
+          </select>
+        </label>
+
+        <label class="field">
+          <span>Schedule</span>
+          <select id="employmentTypeFilter">
+            <option value="">Full-time & part-time</option>
+            <option value="full_time">Full-time</option>
+            <option value="part_time">Part-time</option>
           </select>
         </label>
 
@@ -70,10 +86,6 @@
             <span>Include jobs without listed pay</span>
           </label>
         </div>
-      </section>
-
-      <section class="agency-strip" aria-label="Agencies">
-        <div id="agencyChips" class="agency-chips"></div>
       </section>
 
       <section class="results" aria-label="Job results">

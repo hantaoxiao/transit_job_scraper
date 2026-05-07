@@ -14,6 +14,17 @@ from scrapers.ukg import scrape_ukg
 from scrapers.salesforce_custom import scrape_salesforce_custom
 from scrapers.sf_careers import scrape_sf_careers
 from scrapers.peoplesoft_wmata import scrape_peoplesoft_wmata
+from scrapers.jobs2web import scrape_jobs2web
+from scrapers.jobvite import scrape_jobvite
+from scrapers.cadient import scrape_cadient
+from scrapers.browser_jobboard import (
+    scrape_adp,
+    scrape_applicantpro,
+    scrape_dayforce,
+    scrape_norta_custom,
+    scrape_prt_custom,
+    scrape_static_job_links,
+)
 
 
 SCRAPER_MAP = {
@@ -27,6 +38,15 @@ SCRAPER_MAP = {
     "salesforce_custom": scrape_salesforce_custom,
     "sf_careers": scrape_sf_careers,
     "peoplesoft_wmata": scrape_peoplesoft_wmata,
+    "jobs2web": scrape_jobs2web,
+    "jobvite": scrape_jobvite,
+    "cadient": scrape_cadient,
+    "adp": scrape_adp,
+    "applicantpro": scrape_applicantpro,
+    "dayforce": scrape_dayforce,
+    "norta_custom": scrape_norta_custom,
+    "prt_custom": scrape_prt_custom,
+    "static_job_links": scrape_static_job_links,
 }
 
 

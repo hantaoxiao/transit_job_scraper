@@ -82,7 +82,7 @@ main {
 
 .toolbar {
   display: grid;
-  grid-template-columns: minmax(260px, 1.4fr) repeat(4, minmax(145px, 0.7fr)) minmax(260px, 1fr);
+  grid-template-columns: minmax(260px, 1.4fr) repeat(6, minmax(125px, 0.7fr)) minmax(260px, 1fr);
   gap: 12px;
   align-items: end;
   padding: 14px;
@@ -143,29 +143,6 @@ main {
   text-transform: none;
 }
 
-.agency-strip {
-  margin: 14px 0 20px;
-}
-
-.agency-chips {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-}
-
-.agency-chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  min-height: 34px;
-  padding: 0 12px;
-  color: #263835;
-  background: #ffffff;
-  border: 1px solid var(--line);
-  border-radius: 999px;
-  cursor: pointer;
-}
-
 .agency-badge {
   display: inline-grid;
   place-items: center;
@@ -179,34 +156,6 @@ main {
   font-size: 0.72rem;
   font-weight: 900;
   line-height: 1;
-}
-
-.agency-chip-name {
-  color: inherit;
-}
-
-.agency-chip span {
-  color: var(--muted);
-  font-size: 0.82rem;
-}
-
-.agency-chip .agency-badge {
-  color: #ffffff;
-  font-size: 0.68rem;
-}
-
-.agency-chip.active {
-  color: #ffffff;
-  background: var(--green);
-  border-color: var(--green);
-}
-
-.agency-chip.active span {
-  color: #dbeee7;
-}
-
-.agency-chip.active .agency-badge {
-  color: #ffffff;
 }
 
 .results-heading {

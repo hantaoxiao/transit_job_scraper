@@ -20,24 +20,31 @@ PAGE_SIZE = 20
 MAX_PAGES = 25
 
 
-def _parse_workday_url(url: str) -> tuple[str, str, str]:
+def _parse_workday_url(url: str) -> tuple[str, str, str, str]:
     parsed = urlparse(url)
     path_parts = [part for part in parsed.path.split("/") if part]
     if not parsed.netloc or len(path_parts) < 1:
         raise ValueError(f"Cannot parse Workday jobs URL: {url}")
 
-    if path_parts[0].lower() in {"en-us", "en"} and len(path_parts) > 1:
+    if path_parts[0].lower() == "recruiting" and len(path_parts) > 2:
+        tenant = path_parts[1]
+        site = path_parts[2]
+        public_site_path = f"recruiting/{tenant}/{site}"
+    elif path_parts[0].lower() in {"en-us", "en"} and len(path_parts) > 1:
         tenant = parsed.netloc.split(".", 1)[0]
         site = path_parts[1]
+        public_site_path = "/".join(path_parts[:2])
     elif len(path_parts) == 1:
         tenant = parsed.netloc.split(".", 1)[0]
         site = path_parts[0]
+        public_site_path = site
     else:
         tenant = path_parts[0]
         site = path_parts[1]
+        public_site_path = "/".join(path_parts[:2])
 
     base = f"{parsed.scheme}://{parsed.netloc}"
-    return base, tenant, site
+    return base, tenant, site, public_site_path
 
 
 def _strip_html(value: Optional[str]) -> str:
@@ -51,12 +58,12 @@ def _detail_url(base: str, tenant: str, site: str, external_path: str) -> str:
     return f"{base}/wday/cxs/{tenant}/{site}/{path}"
 
 
-def _public_url(base: str, site: str, external_path: str) -> str:
+def _public_url(base: str, public_site_path: str, external_path: str) -> str:
     if external_path.startswith("/"):
         external_path = external_path[1:]
     if external_path.startswith("job/"):
-        return f"{base}/{site}/{external_path}"
-    return f"{base}/{site}/job/{external_path}"
+        return f"{base}/{public_site_path}/{external_path}"
+    return f"{base}/{public_site_path}/job/{external_path}"
 
 
 def _fetch_detail(session: requests.Session, base: str, tenant: str, site: str, external_path: str) -> dict:
@@ -84,7 +91,7 @@ def _first_text(values) -> str:
 
 
 def scrape_workday(agency: dict) -> list[dict]:
-    base, tenant, site = _parse_workday_url(agency["jobs_url"])
+    base, tenant, site, public_site_path = _parse_workday_url(agency["jobs_url"])
     search_url = f"{base}/wday/cxs/{tenant}/{site}/jobs"
     session = requests.Session()
     jobs = []
@@ -110,7 +117,7 @@ def scrape_workday(agency: dict) -> list[dict]:
             if not title or not external_path:
                 continue
 
-            source_url = _public_url(base, site, external_path)
+            source_url = _public_url(base, public_site_path, external_path)
             if source_url in seen_urls:
                 continue
             seen_urls.add(source_url)

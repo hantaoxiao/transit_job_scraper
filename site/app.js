@@ -7,13 +7,14 @@
     totalJobs: document.getElementById("totalJobs"),
     searchInput: document.getElementById("searchInput"),
     agencyFilter: document.getElementById("agencyFilter"),
+    stateFilter: document.getElementById("stateFilter"),
     categoryFilter: document.getElementById("categoryFilter"),
     seniorityFilter: document.getElementById("seniorityFilter"),
+    employmentTypeFilter: document.getElementById("employmentTypeFilter"),
     sortSelect: document.getElementById("sortSelect"),
     salaryRange: document.getElementById("salaryRange"),
     salaryOutput: document.getElementById("salaryOutput"),
     includeUnknownSalary: document.getElementById("includeUnknownSalary"),
-    agencyChips: document.getElementById("agencyChips"),
     resultCount: document.getElementById("resultCount"),
     pageSizeSelect: document.getElementById("pageSizeSelect"),
     pagination: document.getElementById("pagination"),
@@ -29,20 +30,54 @@
   const agencyMeta = {
     "AC Transit": { short: "AC", name: "AC Transit", color: "#0f6b50", location: "Oakland, CA", logo: "assets/agency-logos/ac-transit.png" },
     "BART": { short: "BART", name: "Bay Area Rapid Transit", color: "#0074bc", location: "Oakland, CA", logo: "assets/agency-logos/bart.png" },
+    "CATS": { short: "CATS", name: "Charlotte Area Transit System", color: "#1b5aa6", location: "Charlotte, NC", logo: "assets/agency-logos/cats.png" },
+    "COTA": { short: "COTA", name: "Central Ohio Transit Authority", color: "#005eb8", location: "Columbus, OH", logo: "assets/agency-logos/cota.png" },
     "CTA": { short: "CTA", name: "Chicago Transit Authority", color: "#c62828", location: "Chicago, IL", logo: "assets/agency-logos/cta.png" },
+    "CapMetro": { short: "CapMetro", name: "CapMetro", color: "#d71920", location: "Austin, TX", logo: "assets/agency-logos/capmetro.png" },
+    "DART": { short: "DART", name: "Dallas Area Rapid Transit", color: "#f6c600", location: "Dallas, TX", logo: "assets/agency-logos/dart.png" },
+    "DDOT": { short: "DDOT", name: "Detroit Department of Transportation", color: "#005baa", location: "Detroit, MI", logo: "assets/agency-logos/ddot.png" },
+    "Foothill Transit": { short: "Foothill", name: "Foothill Transit", color: "#78be20", location: "West Covina, CA", logo: "assets/agency-logos/foothill-transit.png" },
+    "GCRTA": { short: "RTA", name: "Greater Cleveland Regional Transit Authority", color: "#0067b1", location: "Cleveland, OH", logo: "assets/agency-logos/gcrta.png" },
+    "GRTC": { short: "GRTC", name: "Greater Richmond Transit Company", color: "#005baa", location: "Richmond, VA", logo: "assets/agency-logos/grtc.png" },
+    "Hampton Roads Transit": { short: "HRT", name: "Hampton Roads Transit", color: "#004c97", location: "Norfolk, VA", logo: "assets/agency-logos/hampton-roads-transit.png" },
     "Honolulu DTS": { short: "DTS", name: "Honolulu Department of Transportation Services", color: "#007a7a", location: "Honolulu, HI", logo: "assets/agency-logos/honolulu-dts.png" },
+    "Houston METRO": { short: "METRO", name: "Metropolitan Transit Authority of Harris County", color: "#d71920", location: "Houston, TX", logo: "assets/agency-logos/houston-metro.png" },
+    "IndyGo": { short: "IndyGo", name: "IndyGo", color: "#6f2c91", location: "Indianapolis, IN", logo: "assets/agency-logos/indygo.png" },
+    "KCATA": { short: "RideKC", name: "Kansas City Area Transportation Authority", color: "#0072ce", location: "Kansas City, MO", logo: "assets/agency-logos/kcata.png" },
     "King County Metro": { short: "KCM", name: "King County Metro", color: "#f0a202", location: "Seattle, WA", logo: "assets/agency-logos/king-county-metro.png" },
     "LA Metro": { short: "LA", name: "Los Angeles Metro", color: "#d11f3d", location: "Los Angeles, CA", logo: "assets/agency-logos/la-metro.png" },
+    "LYNX": { short: "LYNX", name: "LYNX", color: "#6f2c91", location: "Orlando, FL", logo: "assets/agency-logos/lynx.png" },
     "MARTA": { short: "MARTA", name: "Metropolitan Atlanta Rapid Transit Authority", color: "#1c4f9c", location: "Atlanta, GA", logo: "assets/agency-logos/marta.png" },
     "MBTA": { short: "T", name: "Massachusetts Bay Transportation Authority", color: "#111111", location: "Boston, MA", logo: "assets/agency-logos/mbta.png" },
+    "MCTS": { short: "MCTS", name: "Milwaukee County Transit System", color: "#004b8d", location: "Milwaukee, WI", logo: "assets/agency-logos/mcts.png" },
+    "Miami-Dade DTPW": { short: "DTPW", name: "Miami-Dade Department of Transportation and Public Works", color: "#f58220", location: "Miami, FL", logo: "assets/agency-logos/miami-dade-dtpw.png" },
+    "Metro Transit MN": { short: "Metro", name: "Metro Transit", color: "#005eb8", location: "Minneapolis, MN", logo: "assets/agency-logos/metro-transit-mn.png" },
+    "Metro Transit Madison": { short: "Metro", name: "Metro Transit Madison", color: "#0072bc", location: "Madison, WI", logo: "assets/agency-logos/metro-transit-madison.png" },
+    "Metra": { short: "Metra", name: "Metra", color: "#005baa", location: "Chicago, IL", logo: "assets/agency-logos/metra.png" },
+    "Metrolink": { short: "Metrolink", name: "Metrolink", color: "#005daa", location: "Los Angeles, CA", logo: "assets/agency-logos/metrolink.png" },
     "MTA": { short: "MTA", name: "Metropolitan Transportation Authority", color: "#0039a6", location: "New York, NY", logo: "assets/agency-logos/mta.svg" },
+    "NICE Bus": { short: "NICE", name: "NICE Bus", color: "#f37021", location: "Mineola, NY", logo: "assets/agency-logos/nice-bus.png" },
     "NJ Transit": { short: "NJT", name: "NJ Transit", color: "#f37021", location: "Newark, NJ", logo: "assets/agency-logos/nj-transit.png" },
+    "OCTA": { short: "OCTA", name: "Orange County Transportation Authority", color: "#005eb8", location: "Orange, CA", logo: "assets/agency-logos/octa.png" },
+    "PATH": { short: "PATH", name: "Port Authority Trans-Hudson", color: "#003e7e", location: "Jersey City, NJ", logo: "assets/agency-logos/path.svg" },
+    "Pace": { short: "Pace", name: "Pace Suburban Bus", color: "#005eb8", location: "Arlington Heights, IL", logo: "assets/agency-logos/pace.png" },
+    "Palm Tran": { short: "Palm", name: "Palm Tran", color: "#007a53", location: "West Palm Beach, FL", logo: "assets/agency-logos/palm-tran.png" },
+    "Pittsburgh Regional Transit": { short: "PRT", name: "Pittsburgh Regional Transit", color: "#005eb8", location: "Pittsburgh, PA", logo: "assets/agency-logos/pittsburgh-regional-transit.svg" },
+    "RTA New Orleans": { short: "RTA", name: "New Orleans Regional Transit Authority", color: "#003da5", location: "New Orleans, LA", logo: "assets/agency-logos/rta-new-orleans.png" },
     "RTC Transit": { short: "RTC", name: "Regional Transportation Commission of Southern Nevada", color: "#6f2c91", location: "Las Vegas, NV", logo: "assets/agency-logos/rtc-transit.png" },
     "RTD Denver": { short: "RTD", name: "Regional Transportation District Denver", color: "#005daa", location: "Denver, CO", logo: "assets/agency-logos/rtd-denver.png" },
+    "SMART": { short: "SMART", name: "Suburban Mobility Authority for Regional Transportation", color: "#005eb8", location: "Detroit, MI", logo: "assets/agency-logos/smart.png" },
+    "SORTA Metro": { short: "Metro", name: "Southwest Ohio Regional Transit Authority", color: "#005eb8", location: "Cincinnati, OH", logo: "assets/agency-logos/sorta-metro.png" },
     "SEPTA": { short: "SEPTA", name: "Southeastern Pennsylvania Transportation Authority", color: "#1f4e79", location: "Philadelphia, PA", logo: "assets/agency-logos/septa.png" },
     "SFMTA": { short: "Muni", name: "San Francisco Municipal Transportation Agency", color: "#b71c1c", location: "San Francisco, CA", logo: "assets/agency-logos/sfmta.png" },
+    "SacRT": { short: "SacRT", name: "Sacramento Regional Transit", color: "#0072bc", location: "Sacramento, CA", logo: "assets/agency-logos/sacrt.svg" },
+    "San Diego MTS": { short: "MTS", name: "San Diego Metropolitan Transit System", color: "#005eb8", location: "San Diego, CA", logo: "assets/agency-logos/san-diego-mts.png" },
     "Sound Transit": { short: "ST", name: "Sound Transit", color: "#00843d", location: "Seattle, WA", logo: "assets/agency-logos/sound-transit.svg" },
     "TriMet": { short: "TriMet", name: "TriMet", color: "#006b54", location: "Portland, OR", logo: "assets/agency-logos/trimet.png" },
+    "Utah Transit Authority": { short: "UTA", name: "Utah Transit Authority", color: "#005eb8", location: "Salt Lake City, UT", logo: "assets/agency-logos/utah-transit-authority.svg" },
+    "VIA Metropolitan Transit": { short: "VIA", name: "VIA Metropolitan Transit", color: "#005eb8", location: "San Antonio, TX", logo: "assets/agency-logos/via-metropolitan-transit.png" },
+    "VTA": { short: "VTA", name: "Santa Clara Valley Transportation Authority", color: "#005eb8", location: "San Jose, CA", logo: "assets/agency-logos/vta.png" },
+    "Valley Metro": { short: "Valley", name: "Valley Metro", color: "#7a3e98", location: "Phoenix, AZ", logo: "assets/agency-logos/valley-metro.png" },
     "WMATA": { short: "Metro", name: "Washington Metropolitan Area Transit Authority", color: "#005ea8", location: "Washington, DC", logo: "assets/agency-logos/wmata.svg" },
   };
 
@@ -71,20 +106,49 @@
     "Atlanta, GA": { x: 69, y: 67 },
     "Boston, MA": { x: 88, y: 28 },
     "Brooklyn, NY": { x: 84, y: 36 },
+    "Charlotte, NC": { x: 75, y: 61 },
     "Chicago, IL": { x: 62, y: 38 },
+    "Cincinnati, OH": { x: 69, y: 48 },
+    "Cleveland, OH": { x: 70, y: 39 },
+    "Columbus, OH": { x: 70, y: 45 },
+    "Dallas, TX": { x: 54, y: 71 },
     "Denver, CO": { x: 44, y: 49 },
+    "Detroit, MI": { x: 68, y: 36 },
+    "Indianapolis, IN": { x: 65, y: 47 },
     "Honolulu, HI": { x: 8, y: 84 },
+    "Houston, TX": { x: 55, y: 78 },
     "Jamaica, NY": { x: 84, y: 36 },
+    "Jersey City, NJ": { x: 84, y: 37 },
+    "Kansas City, MO": { x: 56, y: 51 },
     "Las Vegas, NV": { x: 24, y: 58 },
     "Los Angeles, CA": { x: 18, y: 63 },
+    "Madison, WI": { x: 61, y: 36 },
+    "Miami, FL": { x: 78, y: 84 },
+    "Milwaukee, WI": { x: 63, y: 35 },
+    "Mineola, NY": { x: 85, y: 36 },
+    "Minneapolis, MN": { x: 57, y: 31 },
     "New York, NY": { x: 84, y: 35 },
+    "New Orleans, LA": { x: 62, y: 79 },
     "Newark, NJ": { x: 83, y: 38 },
+    "Norfolk, VA": { x: 80, y: 56 },
     "Oakland, CA": { x: 14, y: 52 },
+    "Orange, CA": { x: 18, y: 62 },
+    "Orlando, FL": { x: 76, y: 79 },
     "Philadelphia, PA": { x: 81, y: 41 },
+    "Phoenix, AZ": { x: 30, y: 65 },
+    "Pittsburgh, PA": { x: 75, y: 45 },
     "Portland, OR": { x: 16, y: 27 },
+    "Richmond, VA": { x: 79, y: 54 },
+    "Sacramento, CA": { x: 14, y: 49 },
+    "Salt Lake City, UT": { x: 35, y: 45 },
+    "San Antonio, TX": { x: 52, y: 79 },
+    "San Diego, CA": { x: 19, y: 67 },
+    "San Jose, CA": { x: 14, y: 54 },
     "San Francisco, CA": { x: 13, y: 53 },
     "Seattle, WA": { x: 17, y: 21 },
     "Washington, DC": { x: 79, y: 47 },
+    "West Covina, CA": { x: 18, y: 63 },
+    "West Palm Beach, FL": { x: 79, y: 83 },
   };
 
   const money = new Intl.NumberFormat("en-US", {
@@ -151,26 +215,6 @@
     els.generatedAt.textContent = payload.generated_at ? `Updated ${formatDate(payload.generated_at)}` : "Updated locally";
   }
 
-  function renderAgencyChips() {
-    const counts = jobs.reduce((acc, job) => {
-      acc[job.agency] = (acc[job.agency] || 0) + 1;
-      return acc;
-    }, {});
-
-    els.agencyChips.innerHTML = Object.entries(counts)
-      .sort((a, b) => a[0].localeCompare(b[0]))
-      .map(([agency, count]) => `<button class="agency-chip" type="button" data-agency="${escapeAttribute(agency)}">${agencyBadge(agency)}<span class="agency-chip-name">${escapeHtml(agency)}</span> <span>${count}</span></button>`)
-      .join("");
-
-    els.agencyChips.querySelectorAll(".agency-chip").forEach((chip) => {
-      chip.addEventListener("click", () => {
-        els.agencyFilter.value = chip.dataset.agency;
-        resetPage();
-        renderJobs();
-      });
-    });
-  }
-
   function comparableAnnual(job) {
     return numeric(job.salary_annual_min_est || job.salary_annual_max_est);
   }
@@ -183,6 +227,25 @@
     if (!minSalary) return true;
     if (!truthy(job.salary_is_comparable)) return includeUnknown;
     return comparableAnnual(job) >= minSalary;
+  }
+
+  function employmentTypeText(job) {
+    return [
+      job.employment_type,
+      job.title,
+    ]
+      .join(" ")
+      .toLowerCase();
+  }
+
+  function employmentTypeBucket(job) {
+    const text = employmentTypeText(job);
+    const type = String(job.employment_type || "").toLowerCase();
+
+    if (/\b(part[-\s]?time|pt)\b/i.test(text)) return "part_time";
+    if (/\b(full[-\s]?time|ft)\b/i.test(text)) return "full_time";
+    if (/\b(regular|permanent|career service|provisional|term[-\s]?ltd|term limited|at will)\b/i.test(type)) return "full_time";
+    return "";
   }
 
   const searchAliases = {
@@ -343,8 +406,10 @@
   function filterJobs() {
     const query = els.searchInput.value.trim().toLowerCase();
     const agency = els.agencyFilter.value;
+    const state = els.stateFilter.value;
     const category = els.categoryFilter.value;
     const seniority = els.seniorityFilter.value;
+    const employmentType = els.employmentTypeFilter.value;
     const minSalary = Number(els.salaryRange.value);
     const includeUnknown = els.includeUnknownSalary.checked;
 
@@ -352,8 +417,10 @@
       return (
         (!query || matchesSearch(job, query)) &&
         (!agency || job.agency === agency) &&
+        (!state || job.state === state) &&
         (!category || job.category === category) &&
         (!seniority || job.ai_sort_seniority === seniority) &&
+        (!employmentType || employmentTypeBucket(job) === employmentType) &&
         passesSalary(job, minSalary, includeUnknown)
       );
     });
@@ -410,7 +477,6 @@
     const pageItems = filtered.slice(startIndex, startIndex + pageSize);
 
     els.resultCount.textContent = resultCountText(filtered.length, startIndex, pageItems.length);
-    updateAgencyChipState();
     updateViewState();
 
     if (!filtered.length) {
@@ -474,12 +540,6 @@
     els.mapViewButton.classList.toggle("active", isMap);
     els.listViewButton.setAttribute("aria-pressed", String(!isMap));
     els.mapViewButton.setAttribute("aria-pressed", String(isMap));
-  }
-
-  function updateAgencyChipState() {
-    els.agencyChips.querySelectorAll(".agency-chip").forEach((chip) => {
-      chip.classList.toggle("active", chip.dataset.agency === els.agencyFilter.value);
-    });
   }
 
   function renderJob(job) {
@@ -692,8 +752,10 @@
     const inputs = [
       els.searchInput,
       els.agencyFilter,
+      els.stateFilter,
       els.categoryFilter,
       els.seniorityFilter,
+      els.employmentTypeFilter,
       els.sortSelect,
       els.salaryRange,
       els.includeUnknownSalary,
@@ -718,10 +780,10 @@
   }
 
   optionize(els.agencyFilter, uniqueSorted("agency"));
+  optionize(els.stateFilter, uniqueSorted("state"));
   optionize(els.categoryFilter, uniqueSorted("category"));
   optionize(els.seniorityFilter, uniqueSorted("ai_sort_seniority"));
   setHeader();
-  renderAgencyChips();
   renderJobs();
   bind();
 })();
