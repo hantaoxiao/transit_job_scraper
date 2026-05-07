@@ -2,43 +2,75 @@
 
 A local Python project for collecting public transportation job postings from major U.S. transit agencies and viewing them in a lightweight job-search website.
 
-The core idea is simple: transit agencies use different career platforms, so each agency is mapped to a platform-specific scraper, then normalized into one shared dataset for job seekers.
+The core idea is simple: transit agencies use many different career platforms, so each agency is mapped to a platform-specific scraper, then normalized into one shared dataset for job seekers.
 
 ## What It Does
 
-- Scrapes jobs from major U.S. public transportation agencies
-- Normalizes titles, agencies, locations, categories, seniority, dates, and pay
+- Scrapes jobs from 51 major U.S. public transportation agencies
+- Normalizes titles, agencies, `City, State` locations, categories, seniority, dates, and pay
 - Parses salary ranges into clear `salary_min`, `salary_max`, and `salary_range_display` fields
-- Keeps original salary text for source accuracy
+- Preserves original salary text for source accuracy
 - Writes a CSV dataset to `output/transit_jobs.csv`
 - Writes a local website data bundle to `site/data.js`
 - Provides a static job explorer at `site/index.html`
 
-The website supports search, agency/category/seniority filters, minimum pay filtering, and sorting by newest posted, closing soon, pay, agency, or title.
+The website is designed for job hunting. It supports keyword search, agency/state/category/seniority/schedule filters, minimum pay filtering, list or map view, pagination, official agency logos, and sorting by newest posted, closing soon, pay, agency, or title.
 
 ## Agencies
 
-Current configured agencies include:
+Agency configuration lives in `agencies.py`. Current configured agencies:
 
-- MTA
-- LA Metro
-- CTA
-- NJ Transit
-- SFMTA
-- WMATA
-- SEPTA
-- MBTA
-- King County Metro
-- RTC Transit
-- BART
-- TriMet
-- Honolulu DTS
-- AC Transit
-- RTD Denver
-- MARTA
-- Sound Transit
-
-Agency configuration lives in `agencies.py`.
+- MTA (New York, NY)
+- LA Metro (Los Angeles, CA)
+- CTA (Chicago, IL)
+- NJ Transit (Newark, NJ)
+- SFMTA (San Francisco, CA)
+- WMATA (Washington, DC)
+- SEPTA (Philadelphia, PA)
+- MBTA (Boston, MA)
+- King County Metro (Seattle, WA)
+- RTC Transit (Las Vegas, NV)
+- BART (Oakland, CA)
+- TriMet (Portland, OR)
+- Honolulu DTS (Honolulu, HI)
+- AC Transit (Oakland, CA)
+- RTD Denver (Denver, CO)
+- MARTA (Atlanta, GA)
+- Sound Transit (Seattle, WA)
+- Houston METRO (Houston, TX)
+- Miami-Dade DTPW (Miami, FL)
+- DART (Dallas, TX)
+- San Diego MTS (San Diego, CA)
+- Utah Transit Authority (Salt Lake City, UT)
+- OCTA (Orange, CA)
+- Valley Metro (Phoenix, AZ)
+- VTA (San Jose, CA)
+- Metro Transit MN (Minneapolis, MN)
+- Pace (Arlington Heights, IL)
+- Metra (Chicago, IL)
+- Metrolink (Los Angeles, CA)
+- Pittsburgh Regional Transit (Pittsburgh, PA)
+- VIA Metropolitan Transit (San Antonio, TX)
+- SacRT (Sacramento, CA)
+- LYNX (Orlando, FL)
+- Palm Tran (West Palm Beach, FL)
+- NICE Bus (Mineola, NY)
+- SMART (Detroit, MI)
+- Foothill Transit (West Covina, CA)
+- COTA (Columbus, OH)
+- GCRTA (Cleveland, OH)
+- IndyGo (Indianapolis, IN)
+- MCTS (Milwaukee, WI)
+- Hampton Roads Transit (Norfolk, VA)
+- KCATA (Kansas City, MO)
+- CATS (Charlotte, NC)
+- CapMetro (Austin, TX)
+- GRTC (Richmond, VA)
+- RTA New Orleans (New Orleans, LA)
+- Metro Transit Madison (Madison, WI)
+- DDOT (Detroit, MI)
+- SORTA Metro (Cincinnati, OH)
+- PATH (Jersey City, NJ)
 
 ## Scraper Platforms
 
@@ -48,12 +80,21 @@ Implemented platform scrapers:
 - `mta_custom` - MTA custom career site with browser fallback and detail cache
 - `taleo` - Taleo jobboard API, used for CTA
 - `successfactors` - SEPTA
-- `workday` - RTD Denver
-- `oracle` - MARTA
-- `ukg` - Sound Transit
-- `salesforce_custom` - NJ Transit
+- `workday` - Workday and newer `myworkdaysite.com/recruiting/...` paths, including OCTA
+- `oracle` - Oracle Cloud HCM candidate sites
+- `ukg` - UKG / UltiPro job boards
+- `salesforce_custom` - NJ Transit Salesforce career site
 - `sf_careers` - SFMTA / City and County of San Francisco careers
 - `peoplesoft_wmata` - WMATA PeopleSoft listings
+- `jobs2web` - Jobs2Web / SAP-style boards, used for Houston METRO
+- `jobvite` - Jobvite boards, used for PATH / PANYNJ
+- `cadient` - Cadient boards, used for Metra
+- `adp` - ADP rendered job boards
+- `applicantpro` - ApplicantPro rendered listings
+- `dayforce` - Dayforce rendered candidate portals
+- `static_job_links` - Conservative static-link scraper for simpler career pages
+- `prt_custom` - Pittsburgh Regional Transit custom listing page
+- `norta_custom` - RTA New Orleans custom listing page
 
 ## Install
 
@@ -65,7 +106,11 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-For the MTA browser fallback, Playwright/Chromium must also be available in the environment.
+Some rendered career boards use Playwright. If browser fallback is needed:
+
+```bash
+playwright install chromium
+```
 
 ## Run
 
@@ -85,6 +130,19 @@ Open the local website:
 ```text
 site/index.html
 ```
+
+Because the website is static, opening `site/index.html` directly in a browser is enough after `site/data.js` has been generated.
+
+## Website Features
+
+- Search supports exact keyword matches plus practical related terms for common job families such as analyst, planner, operator, mechanic, and engineer
+- Filters include agency, state, category, seniority, schedule, and minimum pay
+- Schedule filtering separates full-time and part-time while treating common permanent/regular terms as full-time
+- List view is paginated, with 10 jobs shown by default
+- Map view groups filtered jobs by agency/location
+- Official agency logos are displayed in job cards when local assets are available
+
+Logo metadata lives in `site/app.js`, and logo files live in `site/assets/agency-logos/`. The helper script `tools/fetch_agency_logos.py` can refresh logo assets from Wikimedia/direct URLs/official-site favicon sources.
 
 ## Salary Data
 
@@ -122,7 +180,11 @@ transit_job_scraper/
 │   └── transit_jobs.csv
 ├── scrapers/
 │   ├── __init__.py
+│   ├── browser_jobboard.py
+│   ├── cadient.py
 │   ├── governmentjobs.py
+│   ├── jobvite.py
+│   ├── jobs2web.py
 │   ├── mta_custom.py
 │   ├── oracle.py
 │   ├── peoplesoft_wmata.py
@@ -132,11 +194,15 @@ transit_job_scraper/
 │   ├── taleo.py
 │   ├── ukg.py
 │   └── workday.py
-└── site/
-    ├── app.js
-    ├── data.js
-    ├── index.html
-    └── styles.css
+├── site/
+│   ├── app.js
+│   ├── data.js
+│   ├── index.html
+│   ├── styles.css
+│   └── assets/
+│       └── agency-logos/
+└── tools/
+    └── fetch_agency_logos.py
 ```
 
 ## Notes
