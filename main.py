@@ -20,10 +20,15 @@ from scrapers.cadient import scrape_cadient
 from scrapers.browser_jobboard import (
     scrape_adp,
     scrape_applicantpro,
+    scrape_cdta_custom,
     scrape_dayforce,
+    scrape_icims,
+    scrape_munis_selfservice,
+    scrape_nfta_custom,
     scrape_norta_custom,
     scrape_prt_custom,
     scrape_static_job_links,
+    scrape_taleo_v2,
 )
 
 
@@ -43,10 +48,31 @@ SCRAPER_MAP = {
     "cadient": scrape_cadient,
     "adp": scrape_adp,
     "applicantpro": scrape_applicantpro,
+    "cdta_custom": scrape_cdta_custom,
+    "capmetro_custom": scrape_static_job_links,
+    "careersingovernment": scrape_static_job_links,
+    "charlotte_custom": scrape_static_job_links,
     "dayforce": scrape_dayforce,
+    "detroit_custom": scrape_static_job_links,
+    "foothill_custom": scrape_static_job_links,
+    "grtc_custom": scrape_static_job_links,
+    "madison_custom": scrape_static_job_links,
+    "metra_custom": scrape_cadient,
+    "icims": scrape_icims,
+    "munis_selfservice": scrape_munis_selfservice,
+    "nfta_custom": scrape_nfta_custom,
     "norta_custom": scrape_norta_custom,
+    "oracle_legacy": scrape_static_job_links,
+    "panynj_custom": scrape_static_job_links,
+    "peoplesoft_miami": scrape_static_job_links,
     "prt_custom": scrape_prt_custom,
+    "rta_new_orleans_custom": scrape_norta_custom,
+    "sorta_custom": scrape_static_job_links,
     "static_job_links": scrape_static_job_links,
+    "taleo_v2": scrape_taleo_v2,
+    "transdev": scrape_static_job_links,
+    "uta_custom": scrape_static_job_links,
+    "via_custom": scrape_static_job_links,
 }
 
 

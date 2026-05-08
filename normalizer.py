@@ -51,6 +51,21 @@ def extract_salary(text: Optional[str]) -> str:
         return ""
     text = re.sub(r"\bCompensatio\s+n\b", "Compensation", text, flags=re.IGNORECASE)
     text = re.sub(r"\$\s*(\d{1,3})\s*,\s*(\d{3})", r"$\1,\2", text)
+    benefit_terms = (
+        r"tuition|reimbursement|benefits?|retirement|401a?|457b?|paid time off|holidays?|"
+        r"insurance|employee assistance|medical|dental|vision|wellness|dependent care"
+    )
+
+    def is_benefit_context(match: re.Match) -> bool:
+        context = text[max(0, match.start() - 90) : match.end() + 90]
+        has_benefit_language = re.search(benefit_terms, context, flags=re.IGNORECASE)
+        has_pay_label = re.search(
+            r"\b(salary range|pay range|starting salary|base salary|annual salary|hourly rate|"
+            r"pay rate|starting pay|wage progression)\b",
+            context,
+            flags=re.IGNORECASE,
+        )
+        return bool(has_benefit_language and not has_pay_label)
 
     stop_labels = (
         r"deadline|opening date|closing date|job grade|dept/div|department|location|regulated|"
@@ -59,21 +74,21 @@ def extract_salary(text: Optional[str]) -> str:
         r"job location|additional|reports to|responsibilities|summary|interview selection process"
     )
 
-    annual_amount = re.search(
-        r"(\$\s*\d[\d,.]*\s*[kK]?\s*(?:[-–]|to)\s*\$?\s*\d[\d,.]*\s*[kK]?\s+Annually|\$\s*\d[\d,.]*\s*[kK]?\s+Annually)",
-        text,
-        flags=re.IGNORECASE,
-    )
-    if annual_amount:
-        return clean_text(annual_amount.group(1))
-
     labeled_salary_range = re.search(
-        r"\bsalary\s+range\s*:?\s*(\$\s*\d[\d,.]*\s*[kK]?(?:\s*(?:[-–]|to)\s*\$?\s*\d[\d,.]*\s*[kK]?)?(?:\s*(?:hourly|annually|per\s+hour|/hour|/hr))?)",
+        r"\bsalary\s+range\s*(?:is|:)?\s*-?\s*(\$\s*\d[\d,.]*\s*[kK]?(?:\s*(?:[-–]|to)\s*\$?\s*\d[\d,.]*\s*[kK]?)?(?:\s*(?:hourly|annually|per\s+hour|/hour|/hr))?)",
         text,
         flags=re.IGNORECASE,
     )
     if labeled_salary_range:
         return clean_text(labeled_salary_range.group(1))
+
+    annual_amount = re.search(
+        r"(\$\s*\d[\d,.]*\s*[kK]?\s*(?:[-–]|to)\s*\$?\s*\d[\d,.]*\s*[kK]?\s+Annually|\$\s*\d[\d,.]*\s*[kK]?\s+Annually)",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if annual_amount and not is_benefit_context(annual_amount):
+        return clean_text(annual_amount.group(1))
 
     hourly_rate = re.search(
         rf"\b(?:hourly\s+rate|starting\s+pay\s+rate|pay\s+rate|rate\s+of\s+pay)\s*:?\s*-?\s*(.+?)(?=\s+(?:{stop_labels})\s*:?\b|$)",
@@ -115,7 +130,11 @@ def extract_salary(text: Optional[str]) -> str:
         text,
         flags=re.IGNORECASE,
     )
-    if currency_range and re.search(r"\b(salary|compensation|posted range|pay|rate|wage)\b", text, flags=re.IGNORECASE):
+    if (
+        currency_range
+        and not is_benefit_context(currency_range)
+        and re.search(r"\b(salary|compensation|posted range|pay|rate|wage)\b", text, flags=re.IGNORECASE)
+    ):
         return clean_text(currency_range.group(0))
 
     salary_section = re.search(
@@ -150,7 +169,10 @@ def extract_salary(text: Optional[str]) -> str:
         if money_matches:
             start = section.find("$")
             end = money_matches[-1].end()
-            return clean_text(section[start:end])
+            candidate_match = re.search(r"\$\s*\d[\d,.]*\s*[kK]?", section[start:end])
+            local_context = section[max(0, start - 90) : min(len(section), end + 90)]
+            if not candidate_match or not re.search(benefit_terms, local_context, flags=re.IGNORECASE):
+                return clean_text(section[start:end])
 
     if len(text) > 180:
         return ""
@@ -164,7 +186,7 @@ def extract_salary(text: Optional[str]) -> str:
 
     for pattern in patterns:
         match = re.search(pattern, text, flags=re.IGNORECASE)
-        if match:
+        if match and not is_benefit_context(match):
             return match.group(0)
 
     return ""

@@ -6,7 +6,7 @@ The core idea is simple: transit agencies use many different career platforms, s
 
 ## What It Does
 
-- Scrapes jobs from 51 major U.S. public transportation agencies
+- Scrapes jobs from 66 major U.S. public transportation agencies
 - Normalizes titles, agencies, `City, State` locations, categories, seniority, dates, and pay
 - Parses salary ranges into clear `salary_min`, `salary_max`, and `salary_range_display` fields
 - Preserves original salary text for source accuracy
@@ -71,6 +71,21 @@ Agency configuration lives in `agencies.py`. Current configured agencies:
 - DDOT (Detroit, MI)
 - SORTA Metro (Cincinnati, OH)
 - PATH (Jersey City, NJ)
+- Caltrain (San Carlos, CA)
+- Broward County Transit (Fort Lauderdale, FL)
+- HART (Tampa, FL)
+- PSTA (St. Petersburg, FL)
+- Sun Tran (Tucson, AZ)
+- Omnitrans (San Bernardino, CA)
+- Riverside Transit Agency (Riverside, CA)
+- CDTA (Albany, NY)
+- NFTA (Buffalo, NY)
+- Community Transit (Everett, WA)
+- Spokane Transit Authority (Spokane, WA)
+- Ben Franklin Transit (Richland, WA)
+- Intercity Transit (Olympia, WA)
+- Kitsap Transit (Bremerton, WA)
+- Everett Transit (Everett, WA)
 
 ## Scraper Platforms
 
@@ -79,6 +94,7 @@ Implemented platform scrapers:
 - `governmentjobs` - GovernmentJobs / NEOGOV endpoint and detail pages
 - `mta_custom` - MTA custom career site with browser fallback and detail cache
 - `taleo` - Taleo jobboard API, used for CTA
+- `taleo_v2` - Rendered Taleo v2 boards, used for PSTA
 - `successfactors` - SEPTA
 - `workday` - Workday and newer `myworkdaysite.com/recruiting/...` paths, including OCTA
 - `oracle` - Oracle Cloud HCM candidate sites
@@ -95,6 +111,10 @@ Implemented platform scrapers:
 - `static_job_links` - Conservative static-link scraper for simpler career pages
 - `prt_custom` - Pittsburgh Regional Transit custom listing page
 - `norta_custom` - RTA New Orleans custom listing page
+- `cdta_custom` - CDTA custom employment pages
+- `nfta_custom` - NFTA custom job posting pages
+- `icims` - iCIMS career portals, used for Community Transit
+- `munis_selfservice` - Munis Self Service job boards, used for Spokane Transit Authority
 
 ## Install
 

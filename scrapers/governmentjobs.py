@@ -168,6 +168,7 @@ def scrape_governmentjobs(agency: dict) -> list[dict]:
     session = requests.Session()
     jobs = []
     seen_urls = set()
+    include_terms = [term.lower() for term in agency.get("include_terms", [])]
 
     for page in range(1, MAX_PAGES + 1):
         response = session.get(
@@ -213,6 +214,8 @@ def scrape_governmentjobs(agency: dict) -> list[dict]:
             city, state = _city_state_from_location(detail.get("location", ""), agency["city"], agency["state"])
             description = detail.get("description", "")
             raw_context = clean_text(" ".join([raw_context, description]))
+            if include_terms and not any(term in f"{title} {raw_context}".lower() for term in include_terms):
+                continue
 
             jobs.append(
                 normalize_job(

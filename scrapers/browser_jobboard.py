@@ -112,20 +112,36 @@ def scrape_adp(agency: dict) -> list[dict]:
 def _scrape_adp_myjobs(agency: dict, body_text: str) -> list[dict]:
     match = re.search(r"Recently Posted Jobs\s+(.+?)\s+Show all", body_text, flags=re.DOTALL | re.IGNORECASE)
     if not match:
+        match = re.search(r"Recently Posted Jobs\s+(.+?)\s+Talent Community", body_text, flags=re.DOTALL | re.IGNORECASE)
+    if not match:
         return []
 
-    chunks = re.split(r"\nApply\n", match.group(1))
+    lines = [line.strip() for line in match.group(1).splitlines() if line.strip()]
+    if "Create Job Alert" in lines:
+        lines = lines[lines.index("Create Job Alert") + 1 :]
     jobs = []
-    for chunk in chunks:
-        lines = [line.strip() for line in chunk.splitlines() if line.strip()]
-        if len(lines) < 3:
+    index = 0
+    while index + 3 < len(lines):
+        title = clean_text(lines[index])
+        location = clean_text(lines[index + 1])
+        requisition_id = clean_text(lines[index + 2])
+        if not title or title.lower() in {"create job alert"} or re.fullmatch(r"\d+[dhm]", title, flags=re.IGNORECASE):
+            index += 1
             continue
-        title = clean_text(lines[0])
-        location = clean_text(lines[1])
-        requisition_id = clean_text(lines[2])
-        description = clean_text(" ".join(lines[3:]))
-        if not title or title.lower() in {"create job alert"}:
-            continue
+
+        description_lines = []
+        index += 3
+        while index < len(lines) and lines[index].lower() != "apply":
+            description_lines.append(lines[index])
+            index += 1
+        if index < len(lines) and lines[index].lower() == "apply":
+            index += 1
+        posted_date = ""
+        if index < len(lines) and re.fullmatch(r"\d+[dhm]|today|yesterday", lines[index], flags=re.IGNORECASE):
+            posted_date = lines[index]
+            index += 1
+
+        description = clean_text(" ".join(description_lines))
         city, state = _city_state_from_location(location, agency)
         raw_context = clean_text(" ".join([title, location, requisition_id, description]))
         jobs.append(
@@ -137,11 +153,244 @@ def _scrape_adp_myjobs(agency: dict, body_text: str) -> list[dict]:
                 source_url=agency["jobs_url"],
                 platform=agency["platform"],
                 salary_text=extract_salary(raw_context),
+                posted_date=posted_date,
                 description=description,
                 raw_context=raw_context,
                 extra_fields={"requisition_id": requisition_id},
             )
         )
+    return jobs
+
+
+def scrape_taleo_v2(agency: dict) -> list[dict]:
+    body_text, links = _render_page(agency["jobs_url"], wait_ms=10000)
+    jobs = []
+    seen_urls = set()
+    view_links = [
+        (clean_text(title), source_url)
+        for title, source_url in links
+        if "viewRequisition" in source_url and clean_text(title).lower() not in {"view", "apply"}
+    ]
+
+    for title, source_url in view_links:
+        if not title or source_url in seen_urls:
+            continue
+        seen_urls.add(source_url)
+        detail_text = _detail_text(source_url)
+        context_match = re.search(
+            rf"{re.escape(title)}\s+(.+?)(?=\n[A-Z][^\n]+\n\d{{1,2}}/\d{{1,2}}/\d{{2,4}}|PSTA is a dynamic|$)",
+            body_text,
+            flags=re.DOTALL,
+        )
+        listing_context = clean_text(context_match.group(1)) if context_match else ""
+        combined = clean_text(" ".join([title, listing_context, detail_text]))
+        closing_match = re.search(r"\b(\d{1,2}/\d{1,2}/\d{2,4})\b", listing_context)
+
+        jobs.append(
+            normalize_job(
+                title=title,
+                agency=agency["agency"],
+                city=agency["city"],
+                state=agency["state"],
+                source_url=source_url,
+                platform=agency["platform"],
+                salary_text=extract_salary(combined),
+                closing_date=closing_match.group(1) if closing_match else "",
+                description=detail_text,
+                raw_context=combined,
+            )
+        )
+
+    return jobs
+
+
+def scrape_cdta_custom(agency: dict) -> list[dict]:
+    response = requests.get(agency["jobs_url"], headers=HEADERS, timeout=30)
+    response.raise_for_status()
+    soup = BeautifulSoup(response.text, "lxml")
+    jobs = []
+    seen_urls = set()
+
+    for link in soup.select('a[href^="/employment/"]'):
+        source_url = urljoin(agency["jobs_url"], link["href"])
+        if source_url in seen_urls:
+            continue
+        if source_url.rstrip("/").endswith("/employment-opportunities"):
+            continue
+        seen_urls.add(source_url)
+
+        detail_response = requests.get(source_url, headers=HEADERS, timeout=30)
+        detail_response.raise_for_status()
+        detail_soup = BeautifulSoup(detail_response.text, "lxml")
+        title_node = detail_soup.select_one("h1")
+        title = clean_text(title_node.get_text(" ", strip=True)) if title_node else ""
+        if not title and detail_soup.title:
+            title = clean_text(detail_soup.title.get_text(" ", strip=True).split("|", 1)[0])
+        if not title or title.lower() in {"employment opportunities", "apply today"}:
+            continue
+
+        detail_text = clean_text(detail_soup.get_text(" ", strip=True))
+        jobs.append(
+            normalize_job(
+                title=title,
+                agency=agency["agency"],
+                city=agency["city"],
+                state=agency["state"],
+                source_url=source_url,
+                platform=agency["platform"],
+                salary_text=extract_salary(detail_text),
+                description=detail_text,
+                raw_context=detail_text,
+            )
+        )
+
+    return jobs
+
+
+def scrape_nfta_custom(agency: dict) -> list[dict]:
+    response = requests.get(agency["jobs_url"], headers=HEADERS, timeout=30)
+    response.raise_for_status()
+    soup = BeautifulSoup(response.text, "lxml")
+    jobs = []
+    seen_urls = set()
+
+    for link in soup.select('a[href*="job.aspx?id="]'):
+        source_url = urljoin(agency["jobs_url"], link["href"])
+        if source_url in seen_urls:
+            continue
+        seen_urls.add(source_url)
+
+        detail_response = requests.get(source_url, headers=HEADERS, timeout=30)
+        detail_response.raise_for_status()
+        detail_soup = BeautifulSoup(detail_response.text, "lxml")
+        title_node = detail_soup.find("h2", class_=False) or detail_soup.find("h1")
+        title = clean_text(title_node.get_text(" ", strip=True)) if title_node else ""
+        if not title and detail_soup.title:
+            title = clean_text(detail_soup.title.get_text(" ", strip=True).replace("NFTA Job Detail:", ""))
+        if not title:
+            continue
+
+        detail_text = clean_text(detail_soup.get_text(" ", strip=True))
+        posted_match = re.search(r"\bDate Posted:\s*([A-Za-z0-9/, ]+?)(?=\s+Deadline:)", detail_text, flags=re.IGNORECASE)
+        closing_match = re.search(r"\bDeadline:\s*(.+?)(?=\s+Job Number:)", detail_text, flags=re.IGNORECASE)
+        req_match = re.search(r"\bJob Number:\s*(.+?)(?=\s+Branch:)", detail_text, flags=re.IGNORECASE)
+
+        jobs.append(
+            normalize_job(
+                title=title,
+                agency=agency["agency"],
+                city=agency["city"],
+                state=agency["state"],
+                source_url=source_url,
+                platform=agency["platform"],
+                salary_text=extract_salary(detail_text),
+                posted_date=posted_match.group(1) if posted_match else "",
+                closing_date=closing_match.group(1) if closing_match else "",
+                description=detail_text,
+                raw_context=detail_text,
+                extra_fields={"requisition_id": req_match.group(1) if req_match else ""},
+            )
+        )
+
+    return jobs
+
+
+def scrape_icims(agency: dict) -> list[dict]:
+    iframe_url = agency["jobs_url"]
+    if "in_iframe=1" not in iframe_url:
+        separator = "&" if "?" in iframe_url else "?"
+        iframe_url = f"{iframe_url}{separator}mobile=false&width=1010&height=500&bga=true&needsRedirect=false&jan1offset=-300&jun1offset=-240&in_iframe=1"
+
+    response = requests.get(iframe_url, headers=HEADERS, timeout=30)
+    response.raise_for_status()
+    soup = BeautifulSoup(response.text, "lxml")
+    jobs = []
+    seen_urls = set()
+
+    for link in soup.find_all("a", href=True):
+        source_url = urljoin(iframe_url, link["href"]).replace("&amp;", "&")
+        if not re.search(r"/jobs/\d+/.+/job", source_url):
+            continue
+        title = clean_text(link.get_text(" ", strip=True))
+        title = re.sub(r"^Job Title\s+", "", title, flags=re.IGNORECASE).strip()
+        if not title or title.lower() in {"more details", "view job"} or source_url in seen_urls:
+            continue
+        detail_url = source_url if "in_iframe=1" in source_url else f"{source_url}?in_iframe=1"
+        source_url = re.sub(r"[?&]in_iframe=1", "", source_url)
+        seen_urls.add(source_url)
+
+        detail_text = _detail_text(detail_url)
+        combined = clean_text(" ".join([title, detail_text]))
+        salary_text = _icims_salary(detail_text) or extract_salary(combined)
+        location_match = re.search(r"\b([A-Z][A-Za-z .'-]+,\s+[A-Z]{2})\b", combined)
+        city, state = _city_state_from_location(location_match.group(1) if location_match else "", agency)
+
+        jobs.append(
+            normalize_job(
+                title=title,
+                agency=agency["agency"],
+                city=city,
+                state=state,
+                source_url=source_url,
+                platform=agency["platform"],
+                salary_text=salary_text,
+                description=detail_text,
+                raw_context=combined,
+            )
+        )
+
+    return jobs
+
+
+def _icims_salary(text: str) -> str:
+    text = clean_text(text)
+    unit = ""
+    if re.search(r"\bAnnual\b", text, flags=re.IGNORECASE):
+        unit = "Annually"
+    elif re.search(r"\bHourly\b", text, flags=re.IGNORECASE):
+        unit = "Hourly"
+
+    min_match = re.search(r"\bMin(?:imum)?(?:\s+\([^)]*\))?(?:\s+\w+)?\s*(?:Range)?\s*USD\s*(\$\s*\d[\d,.]*)", text, flags=re.IGNORECASE)
+    max_match = re.search(r"\bMax(?:imum)?(?:\s+\([^)]*\))?(?:\s+\w+)?\s*(?:Range)?\s*USD\s*(\$\s*\d[\d,.]*)", text, flags=re.IGNORECASE)
+    if min_match and max_match:
+        return clean_text(f"{min_match.group(1)} - {max_match.group(1)} {unit}")
+    if min_match:
+        return clean_text(f"{min_match.group(1)} {unit}")
+    return ""
+
+
+def scrape_munis_selfservice(agency: dict) -> list[dict]:
+    response = requests.get(agency["jobs_url"], headers=HEADERS, timeout=30)
+    response.raise_for_status()
+    soup = BeautifulSoup(response.text, "lxml")
+    jobs = []
+    seen_urls = set()
+
+    for link in soup.find_all("a", href=True):
+        source_url = urljoin(agency["jobs_url"], link["href"])
+        if "JobDetail.aspx" not in source_url:
+            continue
+        title = clean_text(link.get_text(" ", strip=True))
+        if not title or source_url in seen_urls:
+            continue
+        seen_urls.add(source_url)
+
+        detail_text = _detail_text(source_url)
+        combined = clean_text(" ".join([title, detail_text]))
+        jobs.append(
+            normalize_job(
+                title=title.title(),
+                agency=agency["agency"],
+                city=agency["city"],
+                state=agency["state"],
+                source_url=source_url,
+                platform=agency["platform"],
+                salary_text=extract_salary(combined),
+                description=detail_text,
+                raw_context=combined,
+            )
+        )
+
     return jobs
 
 
