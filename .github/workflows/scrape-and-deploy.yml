@@ -1,0 +1,73 @@
+name: Scrape and deploy transit jobs
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 7-19/2 * * 1-5"
+      timezone: "America/New_York"
+
+concurrency:
+  group: transit-job-refresh
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+jobs:
+  scrape-and-deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+
+    env:
+      PYTHONUNBUFFERED: "1"
+      SCRAPER_WORKERS: "6"
+      GOVJOBS_DETAIL_WORKERS: "4"
+      WORKDAY_DETAIL_WORKERS: "8"
+      UKG_DETAIL_WORKERS: "8"
+      JOBS2WEB_DETAIL_WORKERS: "8"
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install Python dependencies
+        run: pip install -r requirements.txt
+
+      - name: Install browser dependencies
+        run: python -m playwright install --with-deps chromium
+
+      - name: Scrape jobs and build static data
+        run: python main.py
+
+      - name: Upload CSV artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: transit-jobs-csv
+          path: output/transit_jobs.csv
+          if-no-files-found: ignore
+          retention-days: 14
+
+      - name: Configure GitHub Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
