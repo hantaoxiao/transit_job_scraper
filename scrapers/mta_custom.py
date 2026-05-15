@@ -1,4 +1,5 @@
 import csv
+import os
 import re
 import time
 from pathlib import Path
@@ -490,6 +491,13 @@ def scrape_mta(agency: dict) -> list[dict]:
         response = getattr(exc, "response", None)
         if response is None or response.status_code != 403:
             raise
+
+        if os.getenv("GITHUB_ACTIONS", "").lower() == "true" or os.getenv("CI", "").lower() == "true":
+            cached_jobs = _load_existing_mta_cache(agency)
+            if cached_jobs:
+                print(f"MTA blocked the requests scraper in CI; using {len(cached_jobs)} cached MTA jobs.")
+                return _dedupe_jobs(list(cached_jobs.values()))
+            raise RuntimeError("MTA blocked the requests scraper in CI; skipping interactive browser fallback.")
 
         print("MTA blocked the requests scraper; trying local browser fallback.")
         return _scrape_mta_browser(agency)

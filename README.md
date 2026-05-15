@@ -219,6 +219,14 @@ The slowest rendered boards are optimized to avoid browser detail loops where po
 
 San Diego MTS is currently marked with `skip_scrape_reason` because its ADP rendered board crashes Playwright during full refreshes. Keep it skipped until the ADP scraper is replaced with a safer non-browser parser.
 
+## Public Deployment
+
+The repository includes `.github/workflows/scrape-and-deploy.yml` for GitHub Pages. It can be run manually from the Actions tab and is scheduled for every 2 hours on weekdays from 7 AM through 7 PM Eastern time.
+
+The workflow installs dependencies, installs Playwright Chromium, runs `python main.py`, uploads `output/transit_jobs.csv` as a short-lived artifact, and deploys the generated `site/` folder to GitHub Pages. Enable Pages with source set to GitHub Actions in the repository settings before relying on the scheduled deployment.
+
+In CI, MTA uses cached rows from `output/transit_jobs.csv` when its site blocks requests. If no cache is available, MTA is skipped instead of opening an interactive browser challenge.
+
 Outputs:
 
 ```text
