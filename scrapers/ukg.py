@@ -1,5 +1,7 @@
+import os
 import re
 import json
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Optional
 from urllib.parse import urlencode, urlparse
 
@@ -21,6 +23,16 @@ HEADERS = {
 
 PAGE_SIZE = 50
 MAX_PAGES = 20
+
+
+def _env_int(name: str, default: int) -> int:
+    try:
+        return max(1, int(os.getenv(name, str(default))))
+    except ValueError:
+        return default
+
+
+DETAIL_WORKERS = _env_int("UKG_DETAIL_WORKERS", 8)
 
 
 def _parse_board_url(url: str) -> tuple[str, str, str]:
@@ -73,6 +85,40 @@ def _strip_html(value: Optional[str]) -> str:
     if not value:
         return ""
     return clean_text(BeautifulSoup(value, "lxml").get_text(" ", strip=True))
+
+
+def _money(value) -> str:
+    if value in (None, ""):
+        return ""
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return clean_text(value)
+    return f"${number:,.2f}"
+
+
+def _salary_from_compensation(detail: dict) -> str:
+    pay_range = detail.get("PayRange") if isinstance(detail.get("PayRange"), dict) else {}
+    low = (
+        detail.get("CompensationAnnualMinimum")
+        or detail.get("CompensationHourlyMinimum")
+        or pay_range.get("PayRangeMinimum")
+    )
+    high = (
+        detail.get("CompensationAnnualMaximum")
+        or detail.get("CompensationHourlyMaximum")
+        or pay_range.get("PayRangeMaximum")
+    )
+    amount = detail.get("CompensationAmount")
+    is_hourly = bool(detail.get("CompensationHourlyMinimum") or detail.get("CompensationHourlyMaximum"))
+
+    if low and high:
+        unit = " Hourly" if is_hourly else ""
+        return clean_text(f"{_money(low)} - {_money(high)}{unit}")
+    if amount:
+        unit = " Hourly" if is_hourly else ""
+        return clean_text(f"{_money(amount)}{unit}")
+    return ""
 
 
 def _decode_ukg_json_string(value: str) -> str:
@@ -130,7 +176,7 @@ def scrape_ukg(agency: dict) -> list[dict]:
     base, company_code, board_id = _parse_board_url(agency["jobs_url"])
     search_url = f"{base}/{company_code}/JobBoard/{board_id}/JobBoardView/LoadSearchResults"
     session = requests.Session()
-    jobs = []
+    opportunities_to_fetch = []
     seen_urls = set()
 
     for page in range(MAX_PAGES):
@@ -154,56 +200,79 @@ def scrape_ukg(agency: dict) -> list[dict]:
                 continue
             seen_urls.add(source_url)
 
-            detail = _detail_page_data(session, source_url)
-
-            location = _location_from_ukg(
-                detail.get("Locations")
-                or item.get("Location")
-                or item.get("LocationName")
-                or item.get("Locations")
-                or item.get("City")
-            )
-            city = location.split(",")[0].strip() if location else agency["city"]
-            description = _strip_html(detail.get("Description") or item.get("Description") or item.get("BriefDescription"))
-            salary_text = extract_salary(description)
-            posted_date = clean_text(detail.get("PostedDate") or item.get("PostedDate"))
-            raw_context = clean_text(
-                " ".join(
-                    str(value)
-                    for value in [
-                        title,
-                        item.get("RequisitionNumber"),
-                        item.get("JobCategoryName"),
-                        location,
-                        posted_date,
-                        salary_text,
-                        description,
-                    ]
-                    if value
-                )
-            )
-
-            jobs.append(
-                normalize_job(
-                    title=title,
-                    agency=agency["agency"],
-                    city=city or agency["city"],
-                    state=agency["state"],
-                    source_url=source_url,
-                    platform=agency["platform"],
-                    salary_text=salary_text,
-                    posted_date=posted_date,
-                    category=clean_text(item.get("JobCategoryName")) or None,
-                    description=description,
-                    raw_context=raw_context,
-                    extra_fields={
-                        "requisition_id": clean_text(item.get("RequisitionNumber")),
-                        "opportunity_id": opportunity_id,
-                    },
-                )
+            opportunities_to_fetch.append(
+                {
+                    "item": item,
+                    "title": title,
+                    "source_url": source_url,
+                    "opportunity_id": opportunity_id,
+                }
             )
 
         if len(opportunities) < PAGE_SIZE:
             break
+
+    details = {}
+    if opportunities_to_fetch:
+        workers = min(DETAIL_WORKERS, len(opportunities_to_fetch))
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            futures = {
+                executor.submit(_detail_page_data, requests.Session(), item["source_url"]): item
+                for item in opportunities_to_fetch
+            }
+            for future in as_completed(futures):
+                item = futures[future]
+                details[item["source_url"]] = future.result()
+
+    jobs = []
+    for entry in opportunities_to_fetch:
+        item = entry["item"]
+        detail = details.get(entry["source_url"], {})
+        location = _location_from_ukg(
+            detail.get("Locations")
+            or item.get("Location")
+            or item.get("LocationName")
+            or item.get("Locations")
+            or item.get("City")
+        )
+        city = location.split(",")[0].strip() if location else agency["city"]
+        description = _strip_html(detail.get("Description") or item.get("Description") or item.get("BriefDescription"))
+        salary_text = _salary_from_compensation(detail) or extract_salary(description)
+        posted_date = clean_text(detail.get("PostedDate") or item.get("PostedDate"))
+        raw_context = clean_text(
+            " ".join(
+                str(value)
+                for value in [
+                    entry["title"],
+                    item.get("RequisitionNumber"),
+                    item.get("JobCategoryName"),
+                    location,
+                    posted_date,
+                    salary_text,
+                    description,
+                ]
+                if value
+            )
+        )
+
+        jobs.append(
+            normalize_job(
+                title=entry["title"],
+                agency=agency["agency"],
+                city=city or agency["city"],
+                state=agency["state"],
+                source_url=entry["source_url"],
+                platform=agency["platform"],
+                salary_text=salary_text,
+                posted_date=posted_date,
+                category=clean_text(item.get("JobCategoryName")) or None,
+                description=description,
+                raw_context=raw_context,
+                extra_fields={
+                    "requisition_id": clean_text(item.get("RequisitionNumber")),
+                    "opportunity_id": entry["opportunity_id"],
+                },
+            )
+        )
 
     return jobs

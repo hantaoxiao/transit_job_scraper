@@ -411,7 +411,7 @@ def _scrape_mta_browser(agency: dict) -> list[dict]:
         from playwright.sync_api import sync_playwright
     except ImportError as exc:
         raise RuntimeError(
-            "MTA needs the browser fallback. Install it with: playwright install chromium"
+            "MTA needs Playwright for browser fallback. Run: pip install -r requirements.txt; playwright install chromium"
         ) from exc
 
     summaries = []

@@ -1,5 +1,6 @@
-import time
+import os
 import re
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from urllib.parse import parse_qs, urljoin, urlparse
 
 import requests
@@ -17,6 +18,14 @@ HEADERS = {
 
 SEARCH_ENDPOINT = "https://www.governmentjobs.com/careers/home/index"
 MAX_PAGES = 30
+def _env_int(name: str, default: int) -> int:
+    try:
+        return max(1, int(os.getenv(name, str(default))))
+    except ValueError:
+        return default
+
+
+DETAIL_WORKERS = _env_int("GOVJOBS_DETAIL_WORKERS", 4)
 
 
 BAD_LINK_TEXT = {
@@ -109,6 +118,11 @@ def _detail_fields(session: requests.Session, source_url: str) -> dict:
     return fields
 
 
+def _detail_fields_for_url(source_url: str) -> dict:
+    with requests.Session() as session:
+        return _detail_fields(session, source_url)
+
+
 def _extract_label(text: str, label: str) -> str:
     labels = (
         "Salary",
@@ -166,9 +180,10 @@ def scrape_governmentjobs(agency: dict) -> list[dict]:
     GovernmentJobs agencies benefit.
     """
     session = requests.Session()
-    jobs = []
+    candidates = []
     seen_urls = set()
     include_terms = [term.lower() for term in agency.get("include_terms", [])]
+    exclude_terms = [term.lower() for term in agency.get("exclude_terms", [])]
 
     for page in range(1, MAX_PAGES + 1):
         response = session.get(
@@ -210,37 +225,64 @@ def scrape_governmentjobs(agency: dict) -> list[dict]:
                         listing_salary = text
                         break
 
-            detail = _detail_fields(session, full_url)
-            city, state = _city_state_from_location(detail.get("location", ""), agency["city"], agency["state"])
-            description = detail.get("description", "")
-            raw_context = clean_text(" ".join([raw_context, description]))
-            if include_terms and not any(term in f"{title} {raw_context}".lower() for term in include_terms):
-                continue
-
-            jobs.append(
-                normalize_job(
-                    title=title,
-                    agency=agency["agency"],
-                    city=city,
-                    state=state,
-                    source_url=full_url,
-                    platform=agency["platform"],
-                    salary_text=detail.get("salary_text") or listing_salary,
-                    posted_date=detail.get("posted_date", ""),
-                    closing_date=detail.get("closing_date", ""),
-                    description=description,
-                    raw_context=raw_context,
-                    extra_fields={
-                        "requisition_id": detail.get("requisition_id", ""),
-                        "employment_type": detail.get("employment_type", ""),
-                        "department": detail.get("department", ""),
-                    },
-                )
+            candidates.append(
+                {
+                    "title": title,
+                    "source_url": full_url,
+                    "raw_context": raw_context,
+                    "listing_salary": listing_salary,
+                }
             )
 
         if new_jobs == 0 or len(links) < 10:
             break
 
-    # Give a polite delay if this function is reused in loops.
-    time.sleep(1)
+    if not candidates:
+        return []
+
+    details_by_url = {}
+    with ThreadPoolExecutor(max_workers=DETAIL_WORKERS) as executor:
+        futures = {executor.submit(_detail_fields_for_url, item["source_url"]): item["source_url"] for item in candidates}
+        for future in as_completed(futures):
+            source_url = futures[future]
+            try:
+                details_by_url[source_url] = future.result()
+            except Exception:
+                details_by_url[source_url] = {}
+
+    jobs = []
+    for item in candidates:
+        title = item["title"]
+        source_url = item["source_url"]
+        detail = details_by_url.get(source_url, {})
+        city, state = _city_state_from_location(detail.get("location", ""), agency["city"], agency["state"])
+        description = detail.get("description", "")
+        raw_context = clean_text(" ".join([item["raw_context"], description]))
+        search_text = f"{title} {raw_context}".lower()
+        if include_terms and not any(term in search_text for term in include_terms):
+            continue
+        if exclude_terms and any(term in search_text for term in exclude_terms):
+            continue
+
+        jobs.append(
+            normalize_job(
+                title=title,
+                agency=agency["agency"],
+                city=city,
+                state=state,
+                source_url=source_url,
+                platform=agency["platform"],
+                salary_text=detail.get("salary_text") or item["listing_salary"],
+                posted_date=detail.get("posted_date", ""),
+                closing_date=detail.get("closing_date", ""),
+                description=description,
+                raw_context=raw_context,
+                extra_fields={
+                    "requisition_id": detail.get("requisition_id", ""),
+                    "employment_type": detail.get("employment_type", ""),
+                    "department": detail.get("department", ""),
+                },
+            )
+        )
+
     return jobs

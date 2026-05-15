@@ -1,3 +1,5 @@
+import os
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Optional
 from urllib.parse import urlparse
 
@@ -18,6 +20,16 @@ HEADERS = {
 
 PAGE_SIZE = 20
 MAX_PAGES = 25
+
+
+def _env_int(name: str, default: int) -> int:
+    try:
+        return max(1, int(os.getenv(name, str(default))))
+    except ValueError:
+        return default
+
+
+DETAIL_WORKERS = _env_int("WORKDAY_DETAIL_WORKERS", 8)
 
 
 def _parse_workday_url(url: str) -> tuple[str, str, str, str]:
@@ -94,7 +106,7 @@ def scrape_workday(agency: dict) -> list[dict]:
     base, tenant, site, public_site_path = _parse_workday_url(agency["jobs_url"])
     search_url = f"{base}/wday/cxs/{tenant}/{site}/jobs"
     session = requests.Session()
-    jobs = []
+    postings_to_fetch = []
     seen_urls = set()
 
     for page in range(MAX_PAGES):
@@ -122,51 +134,82 @@ def scrape_workday(agency: dict) -> list[dict]:
                 continue
             seen_urls.add(source_url)
 
-            detail = _fetch_detail(session, base, tenant, site, external_path)
-            location = (
-                clean_text(detail.get("location"))
-                or _first_text(detail.get("additionalLocations"))
-                or clean_text(posting.get("locationsText"))
-            )
-            city = location.split(",")[0].strip() if location else agency["city"]
-            description = _strip_html(detail.get("jobDescription"))
-            posted_date = clean_text(detail.get("startDate") or posting.get("postedOn"))
-            req_id = clean_text(detail.get("jobReqId") or detail.get("jobRequisitionId"))
-            raw_context = clean_text(
-                " ".join(
-                    str(value)
-                    for value in [
-                        title,
-                        location,
-                        posted_date,
-                        req_id,
-                        detail.get("jobProfile"),
-                        detail.get("timeType"),
-                        description,
-                    ]
-                    if value
-                )
-            )
-
-            jobs.append(
-                normalize_job(
-                    title=title,
-                    agency=agency["agency"],
-                    city=city or agency["city"],
-                    state=agency["state"],
-                    source_url=source_url,
-                    platform=agency["platform"],
-                    posted_date=posted_date,
-                    description=description,
-                    raw_context=raw_context,
-                    extra_fields={
-                        "requisition_id": req_id,
-                        "employment_type": clean_text(detail.get("timeType")),
-                    },
-                )
+            postings_to_fetch.append(
+                {
+                    "title": title,
+                    "posting": posting,
+                    "external_path": external_path,
+                    "source_url": source_url,
+                }
             )
 
         if len(postings) < PAGE_SIZE:
             break
+
+    details = {}
+    if postings_to_fetch:
+        workers = min(DETAIL_WORKERS, len(postings_to_fetch))
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            futures = {
+                executor.submit(
+                    _fetch_detail,
+                    requests.Session(),
+                    base,
+                    tenant,
+                    site,
+                    item["external_path"],
+                ): item
+                for item in postings_to_fetch
+            }
+            for future in as_completed(futures):
+                item = futures[future]
+                details[item["source_url"]] = future.result()
+
+    jobs = []
+    for item in postings_to_fetch:
+        posting = item["posting"]
+        detail = details.get(item["source_url"], {})
+        location = (
+            clean_text(detail.get("location"))
+            or _first_text(detail.get("additionalLocations"))
+            or clean_text(posting.get("locationsText"))
+        )
+        city = location.split(",")[0].strip() if location else agency["city"]
+        description = _strip_html(detail.get("jobDescription"))
+        posted_date = clean_text(detail.get("startDate") or posting.get("postedOn"))
+        req_id = clean_text(detail.get("jobReqId") or detail.get("jobRequisitionId"))
+        raw_context = clean_text(
+            " ".join(
+                str(value)
+                for value in [
+                    item["title"],
+                    location,
+                    posted_date,
+                    req_id,
+                    detail.get("jobProfile"),
+                    detail.get("timeType"),
+                    description,
+                ]
+                if value
+            )
+        )
+
+        jobs.append(
+            normalize_job(
+                title=item["title"],
+                agency=agency["agency"],
+                city=city or agency["city"],
+                state=agency["state"],
+                source_url=item["source_url"],
+                platform=agency["platform"],
+                posted_date=posted_date,
+                description=description,
+                raw_context=raw_context,
+                extra_fields={
+                    "requisition_id": req_id,
+                    "employment_type": clean_text(detail.get("timeType")),
+                },
+            )
+        )
 
     return jobs

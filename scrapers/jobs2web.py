@@ -1,3 +1,5 @@
+import os
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from urllib.parse import urljoin, urlparse, parse_qs, urlencode, urlunparse
 
 import requests
@@ -14,6 +16,16 @@ HEADERS = {
 }
 
 MAX_PAGES = 20
+
+
+def _env_int(name: str, default: int) -> int:
+    try:
+        return max(1, int(os.getenv(name, str(default))))
+    except ValueError:
+        return default
+
+
+DETAIL_WORKERS = _env_int("JOBS2WEB_DETAIL_WORKERS", 8)
 
 
 def _search_url(base_url: str, page: int) -> str:
@@ -53,7 +65,7 @@ def _field_from_context(text: str, label: str) -> str:
 
 def scrape_jobs2web(agency: dict) -> list[dict]:
     session = requests.Session()
-    jobs = []
+    listings = []
     seen_urls = set()
     listing_base = agency["jobs_url"]
 
@@ -76,32 +88,54 @@ def scrape_jobs2web(agency: dict) -> list[dict]:
 
             row = link.find_parent("tr") or link.find_parent(class_="job-row") or link.find_parent()
             raw_context = clean_text(row.get_text(" ", strip=True)) if row else title
-            detail_text = _detail_text(session, source_url)
-            combined = clean_text(" ".join([raw_context, detail_text]))
-            location = _field_from_context(combined, "Location")
-            city = location.split(",")[0].strip() if location else agency["city"]
-            state = agency["state"]
-
-            jobs.append(
-                normalize_job(
-                    title=title,
-                    agency=agency["agency"],
-                    city=city or agency["city"],
-                    state=state,
-                    source_url=source_url,
-                    platform=agency["platform"],
-                    salary_text=extract_salary(combined),
-                    posted_date=_field_from_context(combined, "Date"),
-                    description=detail_text,
-                    raw_context=combined,
-                    extra_fields={
-                        "requisition_id": _field_from_context(combined, "Req ID"),
-                        "department": _field_from_context(combined, "Job Function"),
-                    },
-                )
+            listings.append(
+                {
+                    "title": title,
+                    "source_url": source_url,
+                    "raw_context": raw_context,
+                }
             )
 
         if new_jobs == 0:
             break
+
+    detail_texts = {}
+    if listings:
+        workers = min(DETAIL_WORKERS, len(listings))
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            futures = {
+                executor.submit(_detail_text, requests.Session(), item["source_url"]): item
+                for item in listings
+            }
+            for future in as_completed(futures):
+                item = futures[future]
+                detail_texts[item["source_url"]] = future.result()
+
+    jobs = []
+    for item in listings:
+        detail_text = detail_texts.get(item["source_url"], "")
+        combined = clean_text(" ".join([item["raw_context"], detail_text]))
+        location = _field_from_context(combined, "Location")
+        city = location.split(",")[0].strip() if location else agency["city"]
+        state = agency["state"]
+
+        jobs.append(
+            normalize_job(
+                title=item["title"],
+                agency=agency["agency"],
+                city=city or agency["city"],
+                state=state,
+                source_url=item["source_url"],
+                platform=agency["platform"],
+                salary_text=extract_salary(combined),
+                posted_date=_field_from_context(combined, "Date"),
+                description=detail_text,
+                raw_context=combined,
+                extra_fields={
+                    "requisition_id": _field_from_context(combined, "Req ID"),
+                    "department": _field_from_context(combined, "Job Function"),
+                },
+            )
+        )
 
     return jobs

@@ -6,7 +6,7 @@ The core idea is simple: transit agencies use many different career platforms, s
 
 ## What It Does
 
-- Scrapes jobs from 66 major U.S. public transportation agencies
+- Scrapes jobs from 119 U.S. public transportation agencies
 - Normalizes titles, agencies, `City, State` locations, categories, seniority, dates, and pay
 - Parses salary ranges into clear `salary_min`, `salary_max`, and `salary_range_display` fields
 - Preserves original salary text for source accuracy
@@ -16,9 +16,18 @@ The core idea is simple: transit agencies use many different career platforms, s
 
 The website is designed for job hunting. It supports keyword search, agency/state/category/seniority/schedule filters, minimum pay filtering, list or map view, pagination, official agency logos, and sorting by newest posted, closing soon, pay, agency, or title.
 
+The scraper runner is optimized for repeat full refreshes:
+
+- HTTP/API-based scrapers run concurrently by default
+- Browser-heavy and custom rendered scrapers run one agency at a time by default, with MTA kept serial for its challenge/cache flow
+- Large detail-page loops are fetched concurrently within each agency where the source supports it
+- Each agency log line includes elapsed time, making slow portals easy to spot
+
 ## Agencies
 
 Agency configuration lives in `agencies.py`. Current configured agencies:
+
+The California expansion uses the 2024 agency workbook as the source list and adds the California Full Reporter agencies with reporter acronyms first. Some of these agencies have no open jobs today, but their career pages are still configured so future openings can be collected.
 
 - MTA (New York, NY)
 - LA Metro (Los Angeles, CA)
@@ -86,6 +95,59 @@ Agency configuration lives in `agencies.py`. Current configured agencies:
 - Intercity Transit (Olympia, WA)
 - Kitsap Transit (Bremerton, WA)
 - Everett Transit (Everett, WA)
+- Access Services (El Monte, CA)
+- CalVans (Visalia, CA)
+- MTC (San Francisco, CA)
+- SJCOG (Stockton, CA)
+- SANDAG (San Diego, CA)
+- LADOT (Los Angeles, CA)
+- SamTrans (San Carlos, CA)
+- Victor Valley Transit Authority (Hesperia, CA)
+- Long Beach Transit (Long Beach, CA)
+- North County Transit District (Oceanside, CA)
+- Monterey-Salinas Transit (Monterey, CA)
+- Big Blue Bus (Santa Monica, CA)
+- Fresno Area Express (Fresno, CA)
+- County Connection (Concord, CA)
+- San Joaquin RTD (Stockton, CA)
+- StanisCruise (Modesto, CA)
+- Santa Cruz METRO (Santa Cruz, CA)
+- Golden Empire Transit District (Bakersfield, CA)
+- Antelope Valley Transit Authority (Lancaster, CA)
+- Santa Clarita Transit (Santa Clarita, CA)
+- Montebello Bus Lines (Montebello, CA)
+- SBCTA (San Bernardino, CA)
+- Torrance Transit (Torrance, CA)
+- Gold Coast Transit District (Oxnard, CA)
+- Golden Gate Transit (San Francisco, CA)
+- Marin Transit (San Rafael, CA)
+- Santa Barbara MTD (Santa Barbara, CA)
+- Kings Area Regional Transit (Hanford, CA)
+- Anaheim Regional Transportation (Anaheim, CA)
+- Sonoma County Transit (Santa Rosa, CA)
+- LAVTA (Livermore, CA)
+- Napa Valley Transportation Authority (Napa, CA)
+- Tulare County Regional Transit Agency (Visalia, CA)
+- YoloTD (Woodland, CA)
+- Placer County Transit/TART (Auburn, CA)
+- Pomona Valley Transportation Authority (La Verne, CA)
+- VCTC (Camarillo, CA)
+- Kern Regional Transit (Bakersfield, CA)
+- SLO RTA (San Luis Obispo, CA)
+- ICTC (El Centro, CA)
+- RCTC (Riverside, CA)
+- Visalia Transit (Visalia, CA)
+- Butte Regional Transit/B-Line (Chico, CA)
+- WestCAT (Pinole, CA)
+- Unitrans (Davis, CA)
+- Altamont Corridor Express (Stockton, CA)
+- Norwalk Transit (Norwalk, CA)
+- Santa Maria Regional Transit (Santa Maria, CA)
+- Beach Cities Transit (Redondo Beach, CA)
+- Commerce Transit (Commerce, CA)
+- San Francisco Bay Ferry (San Francisco, CA)
+- Clean Air Express (Santa Barbara, CA)
+- La Mirada Transit (La Mirada, CA)
 
 ## Scraper Platforms
 
@@ -105,10 +167,13 @@ Implemented platform scrapers:
 - `jobs2web` - Jobs2Web / SAP-style boards, used for Houston METRO
 - `jobvite` - Jobvite boards, used for PATH / PANYNJ
 - `cadient` - Cadient boards, used for Metra
-- `adp` - ADP rendered job boards
-- `applicantpro` - ApplicantPro rendered listings
-- `dayforce` - Dayforce rendered candidate portals
+- `adp` - ADP WorkForce Now API plus rendered fallback for newer boards
+- `applicantpro` - ApplicantPro listings with JSON-LD detail extraction
+- `dayforce` - Dayforce search/detail APIs with rendered fallback
+- `transdev` - Transdev/NICE job pages through lightweight listing and detail reads
 - `static_job_links` - Conservative static-link scraper for simpler career pages
+- `static_text` - Conservative text-section scraper for official agency pages that list openings directly
+- `calopps` - CalOpps agency pages, used by some California transit agencies
 - `prt_custom` - Pittsburgh Regional Transit custom listing page
 - `norta_custom` - RTA New Orleans custom listing page
 - `cdta_custom` - CDTA custom employment pages
@@ -129,6 +194,7 @@ pip install -r requirements.txt
 Some rendered career boards use Playwright. If browser fallback is needed:
 
 ```bash
+pip install -r requirements.txt
 playwright install chromium
 ```
 
@@ -137,6 +203,21 @@ playwright install chromium
 ```bash
 python main.py
 ```
+
+Optional performance controls:
+
+```bash
+SCRAPER_WORKERS=6 GOVJOBS_DETAIL_WORKERS=4 python main.py
+WORKDAY_DETAIL_WORKERS=8 UKG_DETAIL_WORKERS=8 JOBS2WEB_DETAIL_WORKERS=8 python main.py
+RISKY_SCRAPER_TIMEOUT=180 python main.py
+SCRAPER_MODE=sequential python main.py
+```
+
+`SCRAPER_WORKERS` controls HTTP/API agency parallelism. Browser/custom agencies run in isolated child processes with per-agency timeouts, so a crashing Playwright portal cannot stop the full refresh. `RISKY_SCRAPER_TIMEOUT` controls the default timeout for those isolated scrapers; platform-specific timeouts in `main.py` override it for known long-running boards. Detail worker settings speed up salary/detail collection inside large API boards without skipping detail pages. Use `SCRAPER_MODE=sequential` when debugging a single platform or comparing behavior with the older serial runner.
+
+The slowest rendered boards are optimized to avoid browser detail loops where possible. ADP WorkForce Now, Dayforce, ApplicantPro, Transdev/NICE, and VIA detail pages use API, JSON-LD, or lightweight HTML/JSON reads first; Playwright remains as a fallback for portals that do not expose stable detail data.
+
+San Diego MTS is currently marked with `skip_scrape_reason` because its ADP rendered board crashes Playwright during full refreshes. Keep it skipped until the ADP scraper is replaced with a safer non-browser parser.
 
 Outputs:
 

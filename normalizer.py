@@ -82,6 +82,41 @@ def extract_salary(text: Optional[str]) -> str:
     if labeled_salary_range:
         return clean_text(labeled_salary_range.group(1))
 
+    labeled_salary = re.search(
+        r"\bsalary\s*:\s*(\$\s*\d[\d,.]*\s*[kK]?(?:\s*(?:[-–]|to)\s*\$?\s*\d[\d,.]*\s*[kK]?)?(?:\s*(?:hourly|annually|per\s+hour|/hour|/hr))?)",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if labeled_salary:
+        return clean_text(labeled_salary.group(1))
+
+    pay_begins_range = re.search(
+        r"\bpay\s+begins\s+at\s*(\$\s*\d[\d,.]*)\s*(?:/|per)?\s*(hour|hr)?"
+        r".{0,160}?\bincreasing\s+to\s*(\$\s*\d[\d,.]*)\s*(?:/|per)?\s*(hour|hr)?",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if pay_begins_range:
+        unit = "per hour" if pay_begins_range.group(2) or pay_begins_range.group(4) else ""
+        return clean_text(f"{pay_begins_range.group(1)} - {pay_begins_range.group(3)} {unit}")
+
+    expected_compensation = re.search(
+        r"\bexpected\s+compensation\s+range\b.+?\bMinimum:\s*(\$\s*\d[\d,.]*)"
+        r".+?\bMaximum:\s*(\$\s*\d[\d,.]*)",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if expected_compensation:
+        return clean_text(f"{expected_compensation.group(1)} - {expected_compensation.group(2)}")
+
+    bare_annual_salary = re.search(
+        r"\b(\d{5,6}(?:\.\d+)?)\s*(?:[-–]|to)\s*(\d{5,6}(?:\.\d+)?)\s+per\s+year\s+salary\b",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if bare_annual_salary:
+        return clean_text(f"Compensation: {bare_annual_salary.group(1)} - {bare_annual_salary.group(2)} per year")
+
     annual_amount = re.search(
         r"(\$\s*\d[\d,.]*\s*[kK]?\s*(?:[-–]|to)\s*\$?\s*\d[\d,.]*\s*[kK]?\s+Annually|\$\s*\d[\d,.]*\s*[kK]?\s+Annually)",
         text,
@@ -91,7 +126,7 @@ def extract_salary(text: Optional[str]) -> str:
         return clean_text(annual_amount.group(1))
 
     hourly_rate = re.search(
-        rf"\b(?:hourly\s+rate|starting\s+pay\s+rate|pay\s+rate|rate\s+of\s+pay)\s*:?\s*-?\s*(.+?)(?=\s+(?:{stop_labels})\s*:?\b|$)",
+        rf"\b(?:hourly\s+rate|hourly\s+range|starting\s+pay\s+rate|pay\s+rate|rate\s+of\s+pay)\s*:?\s*-?\s*(.+?)(?=\s+(?:{stop_labels})\s*:?\b|$)",
         text,
         flags=re.IGNORECASE,
     )
@@ -179,9 +214,10 @@ def extract_salary(text: Optional[str]) -> str:
 
     patterns = [
         r"\$\s*\d[\d,.]*\s*[kK]?\s*(?:[-–]|to)\s*\$?\s*\d[\d,.]*\s*[kK]?(?:\s*(?:/|per)\s*(?:hour|hr))?",
-        r"\$\s*\d[\d,.]*\s*[kK]?",
         r"\$\s*\d{2,3}(?:\.\d{2})?\s*/\s*hour",
+        r"\$\s*\d{2,3}(?:\.\d{2})?\s*/\s*hr",
         r"\$\s*\d{2,3}(?:\.\d{2})?\s*per\s*hour",
+        r"\$\s*\d[\d,.]*\s*[kK]?",
     ]
 
     for pattern in patterns:
@@ -222,7 +258,7 @@ def _money_values(text: str) -> list[float]:
     labeled_bare_tokens = []
     if re.search(r"\b(salary|compensation|pay rate|hourly rate|rate of pay)\b", text, flags=re.IGNORECASE):
         labeled_bare_tokens = re.findall(
-            r"\b\d{2,3}(?:,\d{3})+(?:\.\d+)?\b|\b\d{2,3}\.\d{2,6}\b",
+            r"\b\d{2,3}(?:,\d{3})+(?:\.\d+)?\b|\b\d{2,3}\.\d{2,6}\b|\b\d{5,6}(?:\.\d+)?\b",
             text,
         )
 
@@ -298,7 +334,7 @@ def parse_salary(salary_text: Optional[str]) -> dict:
         or salary_max >= 1000
     )
 
-    if salary_max < 1000 and (is_hourly or not is_annual):
+    if salary_max < 1000 and (is_hourly or not is_annual or re.search(r"\bannually\b", normalized)):
         unit = "hourly"
         annual_min = round(salary_min * 2080)
         annual_max = round(salary_max * 2080)
