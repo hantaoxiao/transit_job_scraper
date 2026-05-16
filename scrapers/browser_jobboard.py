@@ -1,5 +1,6 @@
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import json
+import os
 import re
 import time
 from urllib.parse import parse_qs, unquote, urljoin, urlparse
@@ -17,6 +18,7 @@ except ImportError:
         pass
 
 from normalizer import clean_text, extract_salary, normalize_job
+from scrapers.detail_cache import cached_detail_text, cached_job, has_cached_detail
 
 
 HEADERS = {
@@ -30,6 +32,19 @@ HEADERS = {
 PLAYWRIGHT_INSTALL_MESSAGE = (
     "Playwright is not installed. Run: pip install -r requirements.txt; playwright install chromium"
 )
+
+
+def _env_int(name: str, default: int) -> int:
+    try:
+        return max(1, int(os.getenv(name, str(default))))
+    except (TypeError, ValueError):
+        return default
+
+
+JINA_DETAIL_WORKERS = _env_int("JINA_DETAIL_WORKERS", 8)
+CDTA_DETAIL_WORKERS = _env_int("CDTA_DETAIL_WORKERS", 6)
+NFTA_DETAIL_WORKERS = _env_int("NFTA_DETAIL_WORKERS", 8)
+STATIC_DETAIL_WORKERS = _env_int("STATIC_DETAIL_WORKERS", 4)
 
 
 def _sync_playwright():
@@ -46,6 +61,15 @@ def _detail_text(url: str) -> str:
         return ""
     soup = BeautifulSoup(response.text, "lxml")
     return clean_text(soup.get_text(" ", strip=True))
+
+
+def _detail_html(url: str) -> str:
+    try:
+        response = requests.get(url, headers=HEADERS, timeout=30)
+        response.raise_for_status()
+    except requests.RequestException:
+        return ""
+    return response.text
 
 
 def _strip_html(value: str) -> str:
@@ -483,7 +507,7 @@ def scrape_cdta_custom(agency: dict) -> list[dict]:
     response = requests.get(agency["jobs_url"], headers=HEADERS, timeout=30)
     response.raise_for_status()
     soup = BeautifulSoup(response.text, "lxml")
-    jobs = []
+    entries = []
     seen_urls = set()
 
     for link in soup.select('a[href^="/employment/"]'):
@@ -494,17 +518,38 @@ def scrape_cdta_custom(agency: dict) -> list[dict]:
             continue
         seen_urls.add(source_url)
 
-        detail_response = requests.get(source_url, headers=HEADERS, timeout=30)
-        detail_response.raise_for_status()
-        detail_soup = BeautifulSoup(detail_response.text, "lxml")
+        cached = cached_job(agency["agency"], source_url=source_url, title=clean_text(link.get_text(" ", strip=True)))
+        entries.append({"source_url": source_url, "cached": cached})
+
+    details = {}
+    pending = [entry for entry in entries if not has_cached_detail(entry["cached"])]
+    if pending:
+        workers = min(CDTA_DETAIL_WORKERS, len(pending))
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            futures = {executor.submit(_detail_html, entry["source_url"]): entry for entry in pending}
+            for future in as_completed(futures):
+                entry = futures[future]
+                details[entry["source_url"]] = future.result()
+
+    jobs = []
+    for entry in entries:
+        source_url = entry["source_url"]
+        cached = entry["cached"]
+        detail_html = details.get(source_url)
+        if detail_html:
+            detail_soup = BeautifulSoup(detail_html, "lxml")
+            detail_text = clean_text(detail_soup.get_text(" ", strip=True))
+        else:
+            detail_text = cached_detail_text(cached)
+            detail_soup = BeautifulSoup(detail_text, "lxml")
         title_node = detail_soup.select_one("h1")
         title = clean_text(title_node.get_text(" ", strip=True)) if title_node else ""
         if not title and detail_soup.title:
             title = clean_text(detail_soup.title.get_text(" ", strip=True).split("|", 1)[0])
+        title = title or cached.get("title", "")
         if not title or title.lower() in {"employment opportunities", "apply today"}:
             continue
 
-        detail_text = clean_text(detail_soup.get_text(" ", strip=True))
         jobs.append(
             normalize_job(
                 title=title,
@@ -513,8 +558,8 @@ def scrape_cdta_custom(agency: dict) -> list[dict]:
                 state=agency["state"],
                 source_url=source_url,
                 platform=agency["platform"],
-                salary_text=extract_salary(detail_text),
-                description=detail_text,
+                salary_text=extract_salary(detail_text) or cached.get("salary_text", ""),
+                description=detail_text or cached.get("description", ""),
                 raw_context=detail_text,
             )
         )
@@ -526,7 +571,7 @@ def scrape_nfta_custom(agency: dict) -> list[dict]:
     response = requests.get(agency["jobs_url"], headers=HEADERS, timeout=30)
     response.raise_for_status()
     soup = BeautifulSoup(response.text, "lxml")
-    jobs = []
+    entries = []
     seen_urls = set()
 
     for link in soup.select('a[href*="job.aspx?id="]'):
@@ -534,18 +579,39 @@ def scrape_nfta_custom(agency: dict) -> list[dict]:
         if source_url in seen_urls:
             continue
         seen_urls.add(source_url)
+        title_hint = clean_text(link.get_text(" ", strip=True))
+        cached = cached_job(agency["agency"], source_url=source_url, title=title_hint)
+        entries.append({"source_url": source_url, "cached": cached})
 
-        detail_response = requests.get(source_url, headers=HEADERS, timeout=30)
-        detail_response.raise_for_status()
-        detail_soup = BeautifulSoup(detail_response.text, "lxml")
+    details = {}
+    pending = [entry for entry in entries if not has_cached_detail(entry["cached"])]
+    if pending:
+        workers = min(NFTA_DETAIL_WORKERS, len(pending))
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            futures = {executor.submit(_detail_html, entry["source_url"]): entry for entry in pending}
+            for future in as_completed(futures):
+                entry = futures[future]
+                details[entry["source_url"]] = future.result()
+
+    jobs = []
+    for entry in entries:
+        source_url = entry["source_url"]
+        cached = entry["cached"]
+        detail_html = details.get(source_url)
+        if detail_html:
+            detail_soup = BeautifulSoup(detail_html, "lxml")
+            detail_text = clean_text(detail_soup.get_text(" ", strip=True))
+        else:
+            detail_text = cached_detail_text(cached)
+            detail_soup = BeautifulSoup(detail_text, "lxml")
         title_node = detail_soup.find("h2", class_=False) or detail_soup.find("h1")
         title = clean_text(title_node.get_text(" ", strip=True)) if title_node else ""
         if not title and detail_soup.title:
             title = clean_text(detail_soup.title.get_text(" ", strip=True).replace("NFTA Job Detail:", ""))
+        title = title or cached.get("title", "")
         if not title:
             continue
 
-        detail_text = clean_text(detail_soup.get_text(" ", strip=True))
         posted_match = re.search(r"\bDate Posted:\s*([A-Za-z0-9/, ]+?)(?=\s+Deadline:)", detail_text, flags=re.IGNORECASE)
         closing_match = re.search(r"\bDeadline:\s*(.+?)(?=\s+Job Number:)", detail_text, flags=re.IGNORECASE)
         req_match = re.search(r"\bJob Number:\s*(.+?)(?=\s+Branch:)", detail_text, flags=re.IGNORECASE)
@@ -558,12 +624,12 @@ def scrape_nfta_custom(agency: dict) -> list[dict]:
                 state=agency["state"],
                 source_url=source_url,
                 platform=agency["platform"],
-                salary_text=extract_salary(detail_text),
-                posted_date=posted_match.group(1) if posted_match else "",
-                closing_date=closing_match.group(1) if closing_match else "",
-                description=detail_text,
+                salary_text=extract_salary(detail_text) or cached.get("salary_text", ""),
+                posted_date=posted_match.group(1) if posted_match else cached.get("posted_date", ""),
+                closing_date=closing_match.group(1) if closing_match else cached.get("closing_date", ""),
+                description=detail_text or cached.get("description", ""),
                 raw_context=detail_text,
-                extra_fields={"requisition_id": req_match.group(1) if req_match else ""},
+                extra_fields={"requisition_id": req_match.group(1) if req_match else cached.get("requisition_id", "")},
             )
         )
 
@@ -1114,6 +1180,7 @@ def scrape_miami_dade_dtpw(agency: dict) -> list[dict]:
     body_text = ""
     current_url = agency["jobs_url"]
     detail_text_by_job_id = {}
+    cached_by_job_id = {}
     try:
         with _sync_playwright() as playwright:
             browser = playwright.chromium.launch(headless=True, args=["--headless=new"])
@@ -1145,15 +1212,29 @@ def scrape_miami_dade_dtpw(agency: dict) -> list[dict]:
                 for match in preview_pattern.finditer(listing)
                 if clean_text(match.group("business_unit")) == "Transportation & Public Works"
             ]
-            if detail_targets:
+            live_detail_targets = []
+            for title, job_id in detail_targets:
+                cached = cached_job(agency["agency"], requisition_id=job_id, title=title)
+                cached_by_job_id[job_id] = cached
+                if has_cached_detail(cached):
+                    detail_text_by_job_id[job_id] = cached_detail_text(cached)
+                else:
+                    live_detail_targets.append((title, job_id))
+
+            if live_detail_targets:
                 try:
-                    page.get_by_text(detail_targets[0][0]).first.click(timeout=7000)
+                    page.get_by_text(live_detail_targets[0][0]).first.click(timeout=7000)
                     page.wait_for_timeout(3000)
+                    remaining_ids = {job_id for _, job_id in live_detail_targets}
                     for _ in detail_targets:
                         detail_text = clean_text(page.locator("body").inner_text(timeout=5000))
                         job_id_match = re.search(r"\bJob ID\s*(\d+)", detail_text, flags=re.IGNORECASE)
-                        if job_id_match:
-                            detail_text_by_job_id[job_id_match.group(1)] = detail_text
+                        if job_id_match and job_id_match.group(1) in remaining_ids:
+                            job_id = job_id_match.group(1)
+                            detail_text_by_job_id[job_id] = detail_text
+                            remaining_ids.discard(job_id)
+                            if not remaining_ids:
+                                break
                         try:
                             page.get_by_text("Next Job", exact=True).click(timeout=5000)
                             page.wait_for_timeout(2500)
@@ -1182,8 +1263,21 @@ def scrape_miami_dade_dtpw(agency: dict) -> list[dict]:
         if fields.get("business_unit") != "Transportation & Public Works":
             continue
         detail_text = detail_text_by_job_id.get(fields["job_id"], "")
-        salary_text = _miami_salary(detail_text)
-        raw_context = clean_text(" ".join([*(f"{key} {value}" for key, value in fields.items()), detail_text]))
+        cached = cached_by_job_id.get(fields["job_id"]) or cached_job(
+            agency["agency"],
+            requisition_id=fields["job_id"],
+            title=fields["title"],
+        )
+        salary_text = _miami_salary(detail_text) or cached.get("salary_text", "")
+        raw_context = clean_text(
+            " ".join(
+                [
+                    *(f"{key} {value}" for key, value in fields.items()),
+                    detail_text,
+                    cached.get("salary_text", ""),
+                ]
+            )
+        )
         jobs.append(
             normalize_job(
                 title=fields["title"],
@@ -1196,7 +1290,7 @@ def scrape_miami_dade_dtpw(agency: dict) -> list[dict]:
                 posted_date=fields.get("posted_date", ""),
                 closing_date=fields.get("close_date", ""),
                 category=fields.get("job_family") or None,
-                description=detail_text,
+                description=detail_text or cached.get("description", ""),
                 raw_context=raw_context,
                 extra_fields={
                     "requisition_id": fields["job_id"],
@@ -1229,7 +1323,7 @@ def _miami_salary(text: str) -> str:
 
 def scrape_uta_custom(agency: dict) -> list[dict]:
     markdown = _jina_markdown(agency["jobs_url"])
-    jobs = []
+    entries = []
     seen_urls = set()
     blocks = re.split(r"\nJob ID:\s*", markdown)
     for block in blocks[1:]:
@@ -1246,22 +1340,60 @@ def scrape_uta_custom(agency: dict) -> list[dict]:
         posted_match = re.search(r"Date posted\s+([0-9.]+)", block)
         location = clean_text(location_match.group(1) if location_match else "")
         city, state = _city_state_from_location(location, agency)
-        detail_markdown = _jina_markdown(source_url)
-        description = _markdown_to_text(detail_markdown)
-        raw_context = clean_text(" ".join([title, job_id, location, block, description]))
+        cached = cached_job(agency["agency"], source_url=source_url, requisition_id=job_id, title=title)
+        entries.append(
+            {
+                "title": clean_text(title),
+                "source_url": source_url,
+                "job_id": job_id,
+                "location": location,
+                "city": city,
+                "state": state,
+                "block": block,
+                "posted_date": clean_text(posted_match.group(1) if posted_match else ""),
+                "cached": cached,
+            }
+        )
+
+    detail_markdowns = {}
+    pending = [entry for entry in entries if not has_cached_detail(entry["cached"])]
+    if pending:
+        workers = min(JINA_DETAIL_WORKERS, len(pending))
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            futures = {executor.submit(_jina_markdown, entry["source_url"]): entry for entry in pending}
+            for future in as_completed(futures):
+                entry = futures[future]
+                detail_markdowns[entry["source_url"]] = future.result()
+
+    jobs = []
+    for entry in entries:
+        cached = entry["cached"]
+        description = _markdown_to_text(detail_markdowns.get(entry["source_url"], "")) or cached_detail_text(cached)
+        raw_context = clean_text(
+            " ".join(
+                [
+                    entry["title"],
+                    entry["job_id"],
+                    entry["location"],
+                    entry["block"],
+                    description,
+                    cached.get("salary_text", ""),
+                ]
+            )
+        )
         jobs.append(
             normalize_job(
-                title=clean_text(title),
+                title=entry["title"],
                 agency=agency["agency"],
-                city=city,
-                state=state,
-                source_url=source_url,
+                city=entry["city"],
+                state=entry["state"],
+                source_url=entry["source_url"],
                 platform=agency["platform"],
-                salary_text=extract_salary(raw_context),
-                posted_date=clean_text(posted_match.group(1) if posted_match else ""),
+                salary_text=extract_salary(raw_context) or cached.get("salary_text", ""),
+                posted_date=entry["posted_date"] or cached.get("posted_date", ""),
                 description=description,
                 raw_context=raw_context,
-                extra_fields={"requisition_id": job_id},
+                extra_fields={"requisition_id": entry["job_id"]},
             )
         )
     return jobs
@@ -1539,7 +1671,7 @@ def scrape_gcrta_custom(agency: dict) -> list[dict]:
 
 def scrape_panynj_custom(agency: dict) -> list[dict]:
     markdown = _jina_markdown(agency["jobs_url"])
-    jobs = []
+    entries = []
     seen_urls = set()
     pattern = re.compile(
         r"Job Title:\s+\[([^\]]+)\]\((https://www\.jointheportauthority\.com/jobs/[^)]+)\)\s+"
@@ -1550,23 +1682,62 @@ def scrape_panynj_custom(agency: dict) -> list[dict]:
         if source_url in seen_urls:
             continue
         seen_urls.add(source_url)
-        detail_markdown = _jina_markdown(source_url)
-        description = _markdown_to_text(detail_markdown)
-        raw_context = clean_text(" ".join([title, job_id, family, department, location, description]))
         city, state = _city_state_from_location(location, agency)
+        cached = cached_job(agency["agency"], source_url=source_url, requisition_id=job_id, title=title)
+        entries.append(
+            {
+                "title": clean_text(title),
+                "source_url": source_url,
+                "job_id": clean_text(job_id),
+                "family": clean_text(family),
+                "department": clean_text(department),
+                "location": clean_text(location),
+                "city": city,
+                "state": state,
+                "cached": cached,
+            }
+        )
+
+    detail_markdowns = {}
+    pending = [entry for entry in entries if not has_cached_detail(entry["cached"])]
+    if pending:
+        workers = min(JINA_DETAIL_WORKERS, len(pending))
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            futures = {executor.submit(_jina_markdown, entry["source_url"]): entry for entry in pending}
+            for future in as_completed(futures):
+                entry = futures[future]
+                detail_markdowns[entry["source_url"]] = future.result()
+
+    jobs = []
+    for entry in entries:
+        cached = entry["cached"]
+        description = _markdown_to_text(detail_markdowns.get(entry["source_url"], "")) or cached_detail_text(cached)
+        raw_context = clean_text(
+            " ".join(
+                [
+                    entry["title"],
+                    entry["job_id"],
+                    entry["family"],
+                    entry["department"],
+                    entry["location"],
+                    description,
+                    cached.get("salary_text", ""),
+                ]
+            )
+        )
         jobs.append(
             normalize_job(
-                title=clean_text(title),
+                title=entry["title"],
                 agency=agency["agency"],
-                city=city,
-                state=state,
-                source_url=source_url,
+                city=entry["city"],
+                state=entry["state"],
+                source_url=entry["source_url"],
                 platform=agency["platform"],
-                salary_text=extract_salary(raw_context),
-                category=clean_text(family) or None,
+                salary_text=extract_salary(raw_context) or cached.get("salary_text", ""),
+                category=entry["family"] or cached.get("category") or None,
                 description=description,
                 raw_context=raw_context,
-                extra_fields={"requisition_id": clean_text(job_id), "department": clean_text(department)},
+                extra_fields={"requisition_id": entry["job_id"], "department": entry["department"]},
             )
         )
     return jobs
@@ -1574,7 +1745,7 @@ def scrape_panynj_custom(agency: dict) -> list[dict]:
 
 def _scrape_transdev_jobs(agency: dict) -> list[dict]:
     markdown = _jina_markdown(agency["jobs_url"])
-    jobs = []
+    entries = []
     seen_urls = set()
     pattern = re.compile(r"##\s+\[([^\]]+?)\]\((https://transdevna\.jobs/[^)]+/job/)\)", flags=re.IGNORECASE)
 
@@ -1583,8 +1754,25 @@ def _scrape_transdev_jobs(agency: dict) -> list[dict]:
             continue
         seen_urls.add(source_url)
         title = re.sub(r"\s+[A-Z][A-Za-z .'-]+,\s+[A-Z]{2}$", "", clean_text(title)).strip()
-        detail_markdown = _jina_markdown(source_url)
-        detail_text = _markdown_to_text(detail_markdown)
+        cached = cached_job(agency["agency"], source_url=source_url, title=title)
+        entries.append({"title": title, "source_url": source_url, "cached": cached})
+
+    detail_markdowns = {}
+    pending = [entry for entry in entries if not has_cached_detail(entry["cached"])]
+    if pending:
+        workers = min(JINA_DETAIL_WORKERS, len(pending))
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            futures = {executor.submit(_jina_markdown, entry["source_url"]): entry for entry in pending}
+            for future in as_completed(futures):
+                entry = futures[future]
+                detail_markdowns[entry["source_url"]] = future.result()
+
+    jobs = []
+    for entry in entries:
+        cached = entry["cached"]
+        title = entry["title"]
+        source_url = entry["source_url"]
+        detail_text = _markdown_to_text(detail_markdowns.get(source_url, "")) or cached_detail_text(cached)
         raw_context = clean_text(" ".join([title, detail_text]))
         city, state = agency["city"], agency["state"]
         location_match = re.search(r"\b([A-Z][A-Za-z .'-]+,\s+[A-Z]{2})\b", raw_context)
@@ -1598,7 +1786,7 @@ def _scrape_transdev_jobs(agency: dict) -> list[dict]:
                 state=state,
                 source_url=source_url,
                 platform=agency["platform"],
-                salary_text=extract_salary(raw_context),
+                salary_text=extract_salary(raw_context) or cached.get("salary_text", ""),
                 description=detail_text,
                 raw_context=raw_context,
             )
@@ -1650,19 +1838,41 @@ def scrape_static_job_links(agency: dict) -> list[dict]:
         if re.search(r"\b(home|privacy|legal|facebook|twitter|linkedin|instagram|translate|contact)\b", title, re.I):
             continue
         seen_urls.add(source_url)
-        detail_text = _detail_text(source_url) if source_url.startswith("http") else ""
-        candidates.append((title, source_url, detail_text))
+        cached = cached_job(agency["agency"], source_url=source_url, title=title)
+        candidates.append({"title": title, "source_url": source_url, "cached": cached})
+
+    detail_texts = {}
+    pending = [
+        candidate
+        for candidate in candidates
+        if candidate["source_url"].startswith("http") and not has_cached_detail(candidate["cached"])
+    ]
+    if pending:
+        workers = min(STATIC_DETAIL_WORKERS, len(pending))
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            futures = {executor.submit(_detail_text, candidate["source_url"]): candidate for candidate in pending}
+            for future in as_completed(futures):
+                candidate = futures[future]
+                detail_texts[candidate["source_url"]] = future.result()
 
     render_urls = [
-        source_url
-        for _, source_url, detail_text in candidates
-        if source_url.startswith("http")
-        and (not detail_text or ("transdevna.jobs" in source_url and not extract_salary(detail_text)))
+        candidate["source_url"]
+        for candidate in candidates
+        if candidate["source_url"].startswith("http")
+        and not has_cached_detail(candidate["cached"])
+        and (
+            not detail_texts.get(candidate["source_url"])
+            or ("transdevna.jobs" in candidate["source_url"] and not extract_salary(detail_texts[candidate["source_url"]]))
+        )
     ]
     rendered_details = _render_many_pages(render_urls, wait_ms=8000) if render_urls else {}
 
     jobs = []
-    for title, source_url, detail_text in candidates:
+    for candidate in candidates:
+        title = candidate["title"]
+        source_url = candidate["source_url"]
+        cached = candidate["cached"]
+        detail_text = detail_texts.get(source_url) or cached_detail_text(cached)
         if source_url in rendered_details and rendered_details[source_url]:
             detail_text = rendered_details[source_url]
         combined = clean_text(" ".join([title, body_text[:1500], detail_text]))
@@ -1675,8 +1885,8 @@ def scrape_static_job_links(agency: dict) -> list[dict]:
                 state=agency["state"],
                 source_url=source_url,
                 platform=agency["platform"],
-                salary_text=extract_salary(combined),
-                description=detail_text,
+                salary_text=extract_salary(combined) or cached.get("salary_text", ""),
+                description=detail_text or cached.get("description", ""),
                 raw_context=combined,
             )
         )
@@ -1789,6 +1999,7 @@ def scrape_static_text_jobs(agency: dict) -> list[dict]:
         "utility",
     ]
     allow_terms = [term.lower() for term in agency.get("title_allow_terms", default_allow_terms)]
+    detail_text_cache = {agency["jobs_url"]: body_text}
 
     apply_links = [
         url
@@ -1817,8 +2028,16 @@ def scrape_static_text_jobs(agency: dict) -> list[dict]:
 
         seen_titles.add(title.lower())
         source_url = apply_links[0] if apply_links else agency["jobs_url"]
-        detail_text = _detail_text(source_url) if source_url.startswith("http") else ""
-        raw_context = clean_text(" ".join([title, window, detail_text]))
+        cached = cached_job(agency["agency"], source_url=source_url, title=title)
+        if has_cached_detail(cached):
+            detail_text = cached_detail_text(cached)
+        elif source_url.startswith("http"):
+            if source_url not in detail_text_cache:
+                detail_text_cache[source_url] = _detail_text(source_url)
+            detail_text = detail_text_cache[source_url]
+        else:
+            detail_text = ""
+        raw_context = clean_text(" ".join([title, window, detail_text, cached.get("salary_text", "")]))
         job = normalize_job(
             title=title,
             agency=agency["agency"],
@@ -1826,8 +2045,8 @@ def scrape_static_text_jobs(agency: dict) -> list[dict]:
             state=agency["state"],
             source_url=source_url,
             platform=agency["platform"],
-            salary_text=extract_salary(original_line) or extract_salary(raw_context),
-            description=detail_text or window,
+            salary_text=extract_salary(original_line) or extract_salary(raw_context) or cached.get("salary_text", ""),
+            description=detail_text or cached.get("description", "") or window,
             raw_context=raw_context,
         )
         jobs[job["job_id"]] = job

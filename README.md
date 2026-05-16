@@ -21,6 +21,7 @@ The scraper runner is optimized for repeat full refreshes:
 - HTTP/API-based scrapers run concurrently by default
 - Browser-heavy and custom rendered scrapers run one agency at a time by default, with MTA kept serial for its challenge/cache flow
 - Large detail-page loops are fetched concurrently within each agency where the source supports it
+- Repeat runs reuse prior detail fields for still-open jobs, so the live listing stays fresh without reopening every unchanged detail page
 - Each agency log line includes elapsed time, making slow portals easy to spot
 
 ## Agencies
@@ -207,13 +208,15 @@ python main.py
 Optional performance controls:
 
 ```bash
-SCRAPER_WORKERS=6 GOVJOBS_DETAIL_WORKERS=4 python main.py
+SCRAPER_WORKERS=6 GOVJOBS_AGENCY_WORKERS=2 python main.py
 WORKDAY_DETAIL_WORKERS=8 UKG_DETAIL_WORKERS=8 JOBS2WEB_DETAIL_WORKERS=8 python main.py
+SUCCESSFACTORS_DETAIL_WORKERS=8 ORACLE_DETAIL_WORKERS=8 JINA_DETAIL_WORKERS=8 python main.py
+SCRAPER_REFRESH_CACHED_DETAILS=1 python main.py
 RISKY_SCRAPER_TIMEOUT=180 python main.py
 SCRAPER_MODE=sequential python main.py
 ```
 
-`SCRAPER_WORKERS` controls HTTP/API agency parallelism. Browser/custom agencies run in isolated child processes with per-agency timeouts, so a crashing Playwright portal cannot stop the full refresh. `RISKY_SCRAPER_TIMEOUT` controls the default timeout for those isolated scrapers; platform-specific timeouts in `main.py` override it for known long-running boards. Detail worker settings speed up salary/detail collection inside large API boards without skipping detail pages. Use `SCRAPER_MODE=sequential` when debugging a single platform or comparing behavior with the older serial runner.
+`SCRAPER_WORKERS` controls HTTP/API agency parallelism. Browser/custom agencies run in isolated child processes with per-agency timeouts, so a crashing Playwright portal cannot stop the full refresh. `RISKY_SCRAPER_TIMEOUT` controls the default timeout for those isolated scrapers; platform-specific timeouts in `main.py` override it for known long-running boards. Detail worker settings speed up salary/detail collection inside large API boards without skipping detail pages for new jobs. By default, the scraper reuses cached salary/description fields from `output/transit_jobs.csv` for unchanged current job URLs or requisition IDs; use `SCRAPER_REFRESH_CACHED_DETAILS=1` when you intentionally want to re-open every detail page.
 
 The slowest rendered boards are optimized to avoid browser detail loops where possible. ADP WorkForce Now, Dayforce, ApplicantPro, Transdev/NICE, and VIA detail pages use API, JSON-LD, or lightweight HTML/JSON reads first; Playwright remains as a fallback for portals that do not expose stable detail data.
 
@@ -228,6 +231,8 @@ The workflow installs dependencies, installs Playwright Chromium, restores the p
 In CI, MTA first tries direct requests. If the MTA site blocks GitHub Actions, the scraper uses a live text-rendered MTA listing fallback so the open job list stays current, enriches new MTA jobs from live detail pages, and reuses cached detail fields only for still-open jobs it has already seen.
 
 GovernmentJobs agencies are listing-first for scheduled runs. The listing endpoint already includes salary, schedule, department/category hints, posted/closing text, and a description preview, so the scraper avoids opening every detail page unless `GOVJOBS_FETCH_DETAILS=1` is explicitly set.
+
+Several detail-heavy boards, including Workday, UKG, Oracle, SuccessFactors, Jobs2Web, NJ Transit, PATH, UTA, CDTA, and NFTA, also reuse cached detail fields for unchanged current jobs. This keeps the job list fresh from each live listing page while making scheduled refreshes much faster and less likely to hit portal timeouts.
 
 Outputs:
 

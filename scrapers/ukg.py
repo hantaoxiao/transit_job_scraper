@@ -9,6 +9,7 @@ import requests
 from bs4 import BeautifulSoup
 
 from normalizer import clean_text, extract_salary, normalize_job
+from scrapers.detail_cache import cached_job, has_cached_detail
 
 
 HEADERS = {
@@ -206,6 +207,12 @@ def scrape_ukg(agency: dict) -> list[dict]:
                     "title": title,
                     "source_url": source_url,
                     "opportunity_id": opportunity_id,
+                    "cached": cached_job(
+                        agency["agency"],
+                        source_url=source_url,
+                        requisition_id=clean_text(item.get("RequisitionNumber")),
+                        title=title,
+                    ),
                 }
             )
 
@@ -213,12 +220,13 @@ def scrape_ukg(agency: dict) -> list[dict]:
             break
 
     details = {}
-    if opportunities_to_fetch:
-        workers = min(DETAIL_WORKERS, len(opportunities_to_fetch))
+    pending = [item for item in opportunities_to_fetch if not has_cached_detail(item["cached"])]
+    if pending:
+        workers = min(DETAIL_WORKERS, len(pending))
         with ThreadPoolExecutor(max_workers=workers) as executor:
             futures = {
                 executor.submit(_detail_page_data, requests.Session(), item["source_url"]): item
-                for item in opportunities_to_fetch
+                for item in pending
             }
             for future in as_completed(futures):
                 item = futures[future]
@@ -228,6 +236,7 @@ def scrape_ukg(agency: dict) -> list[dict]:
     for entry in opportunities_to_fetch:
         item = entry["item"]
         detail = details.get(entry["source_url"], {})
+        cached = entry["cached"]
         location = _location_from_ukg(
             detail.get("Locations")
             or item.get("Location")
@@ -235,10 +244,15 @@ def scrape_ukg(agency: dict) -> list[dict]:
             or item.get("Locations")
             or item.get("City")
         )
-        city = location.split(",")[0].strip() if location else agency["city"]
-        description = _strip_html(detail.get("Description") or item.get("Description") or item.get("BriefDescription"))
-        salary_text = _salary_from_compensation(detail) or extract_salary(description)
-        posted_date = clean_text(detail.get("PostedDate") or item.get("PostedDate"))
+        city = location.split(",")[0].strip() if location else cached.get("city") or agency["city"]
+        description = _strip_html(detail.get("Description") or item.get("Description") or item.get("BriefDescription")) or cached.get("description", "")
+        salary_text = (
+            _salary_from_compensation(detail) or extract_salary(description)
+            if detail
+            else cached.get("salary_text", "")
+        )
+        posted_date = clean_text(detail.get("PostedDate") or item.get("PostedDate") or cached.get("posted_date"))
+        context_description = description if detail else ""
         raw_context = clean_text(
             " ".join(
                 str(value)
@@ -249,7 +263,7 @@ def scrape_ukg(agency: dict) -> list[dict]:
                     location,
                     posted_date,
                     salary_text,
-                    description,
+                    context_description,
                 ]
                 if value
             )

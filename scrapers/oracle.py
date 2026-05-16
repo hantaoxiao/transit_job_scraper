@@ -1,3 +1,5 @@
+import os
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from urllib.parse import urlencode, urlparse
 from typing import Optional
 
@@ -5,6 +7,7 @@ import requests
 from bs4 import BeautifulSoup
 
 from normalizer import clean_text, extract_salary, normalize_job
+from scrapers.detail_cache import cached_job, has_cached_detail
 
 
 HEADERS = {
@@ -17,6 +20,16 @@ HEADERS = {
 
 PAGE_SIZE = 100
 MAX_PAGES = 10
+
+
+def _env_int(name: str, default: int) -> int:
+    try:
+        return max(1, int(os.getenv(name, str(default))))
+    except ValueError:
+        return default
+
+
+DETAIL_WORKERS = _env_int("ORACLE_DETAIL_WORKERS", 8)
 
 
 def _parse_oracle_url(url: str) -> tuple[str, str]:
@@ -102,7 +115,7 @@ def _location_from_detail(detail: dict, fallback: str) -> str:
 def scrape_oracle(agency: dict) -> list[dict]:
     base, site = _parse_oracle_url(agency["jobs_url"])
     session = requests.Session()
-    jobs = []
+    entries = []
     seen_ids = set()
 
     for page in range(MAX_PAGES):
@@ -123,74 +136,112 @@ def scrape_oracle(agency: dict) -> list[dict]:
             if not title or not requisition_id or requisition_id in seen_ids:
                 continue
             seen_ids.add(requisition_id)
-
-            detail = _fetch_detail(session, base, site, requisition_id)
-            location = _location_from_detail(
-                detail,
-                detail.get("PrimaryLocation")
-                or listing.get("PrimaryLocation")
-                or detail.get("Location")
-                or listing.get("Location"),
-            )
-            city = location.split(",")[0].strip() if location else agency["city"]
-            description = _strip_html(
-                detail.get("ExternalDescriptionStr")
-                or detail.get("ExternalResponsibilitiesStr")
-                or listing.get("ExternalResponsibilitiesStr")
-            )
-            salary_text = extract_salary(description)
-            posted_date = clean_text(
-                detail.get("ExternalPostedStartDate")
-                or detail.get("PostedDate")
-                or listing.get("PostedDate")
-            )
-            closing_date = clean_text(
-                detail.get("ExternalPostedEndDate")
-                or detail.get("PostingEndDate")
-                or listing.get("PostingEndDate")
-            )
             source_url = _oracle_public_url(base, site, requisition_id)
-            raw_context = clean_text(
-                " ".join(
-                    str(value)
-                    for value in [
-                        title,
-                        requisition_id,
-                        location,
-                        posted_date,
-                        closing_date,
-                        listing.get("JobFunction"),
-                        listing.get("JobFamily"),
-                        listing.get("Department"),
-                        salary_text,
-                        description,
-                    ]
-                    if value
-                )
-            )
 
-            jobs.append(
-                normalize_job(
-                    title=title,
-                    agency=agency["agency"],
-                    city=city or agency["city"],
-                    state=agency["state"],
-                    source_url=source_url,
-                    platform=agency["platform"],
-                    salary_text=salary_text,
-                    posted_date=posted_date,
-                    closing_date=closing_date,
-                    category=clean_text(listing.get("JobFunction")) or None,
-                    description=description,
-                    raw_context=raw_context,
-                    extra_fields={
-                        "requisition_id": requisition_id,
-                        "department": clean_text(listing.get("Department")),
-                    },
-                )
+            entries.append(
+                {
+                    "title": title,
+                    "requisition_id": requisition_id,
+                    "listing": listing,
+                    "source_url": source_url,
+                    "cached": cached_job(
+                        agency["agency"],
+                        source_url=source_url,
+                        requisition_id=requisition_id,
+                        title=title,
+                    ),
+                }
             )
 
         if len(listings) < PAGE_SIZE:
             break
+
+    details = {}
+    pending = [entry for entry in entries if not has_cached_detail(entry["cached"])]
+    if pending:
+        workers = min(DETAIL_WORKERS, len(pending))
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            futures = {
+                executor.submit(_fetch_detail, requests.Session(), base, site, entry["requisition_id"]): entry
+                for entry in pending
+            }
+            for future in as_completed(futures):
+                entry = futures[future]
+                details[entry["requisition_id"]] = future.result()
+
+    jobs = []
+    for entry in entries:
+        title = entry["title"]
+        requisition_id = entry["requisition_id"]
+        listing = entry["listing"]
+        cached = entry["cached"]
+        detail = details.get(requisition_id, {})
+        cached_location = clean_text(", ".join(value for value in [cached.get("city"), cached.get("state")] if value))
+        location = _location_from_detail(
+            detail,
+            detail.get("PrimaryLocation")
+            or listing.get("PrimaryLocation")
+            or detail.get("Location")
+            or listing.get("Location")
+            or cached_location,
+        )
+        city = location.split(",")[0].strip() if location else cached.get("city") or agency["city"]
+        description = _strip_html(
+            detail.get("ExternalDescriptionStr")
+            or detail.get("ExternalResponsibilitiesStr")
+            or listing.get("ExternalResponsibilitiesStr")
+        ) or cached.get("description", "")
+        salary_text = extract_salary(description) if detail else cached.get("salary_text", "")
+        posted_date = clean_text(
+            detail.get("ExternalPostedStartDate")
+            or detail.get("PostedDate")
+            or listing.get("PostedDate")
+            or cached.get("posted_date")
+        )
+        closing_date = clean_text(
+            detail.get("ExternalPostedEndDate")
+            or detail.get("PostingEndDate")
+            or listing.get("PostingEndDate")
+            or cached.get("closing_date")
+        )
+        raw_context = clean_text(
+            " ".join(
+                str(value)
+                for value in [
+                    title,
+                    requisition_id,
+                    location,
+                    posted_date,
+                    closing_date,
+                    listing.get("JobFunction"),
+                    listing.get("JobFamily"),
+                    listing.get("Department"),
+                    salary_text,
+                    description if detail else "",
+                ]
+                if value
+            )
+        )
+
+        jobs.append(
+            normalize_job(
+                title=title,
+                agency=agency["agency"],
+                city=city or agency["city"],
+                state=agency["state"],
+                source_url=entry["source_url"],
+                platform=agency["platform"],
+                salary_text=salary_text,
+                posted_date=posted_date,
+                closing_date=closing_date,
+                category=clean_text(listing.get("JobFunction")) or cached.get("category") or None,
+                description=description or cached.get("description", ""),
+                raw_context=raw_context,
+                extra_fields={
+                    "requisition_id": requisition_id,
+                    "department": clean_text(listing.get("Department")) or cached.get("department", ""),
+                },
+            )
+        )
 
     return jobs

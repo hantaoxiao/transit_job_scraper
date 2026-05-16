@@ -6,6 +6,7 @@ import requests
 from bs4 import BeautifulSoup
 
 from normalizer import clean_text, extract_salary, normalize_job
+from scrapers.detail_cache import cached_detail_text, cached_job, has_cached_detail
 
 
 HEADERS = {
@@ -93,6 +94,7 @@ def scrape_jobs2web(agency: dict) -> list[dict]:
                     "title": title,
                     "source_url": source_url,
                     "raw_context": raw_context,
+                    "cached": cached_job(agency["agency"], source_url=source_url, title=title),
                 }
             )
 
@@ -100,12 +102,13 @@ def scrape_jobs2web(agency: dict) -> list[dict]:
             break
 
     detail_texts = {}
-    if listings:
-        workers = min(DETAIL_WORKERS, len(listings))
+    pending = [item for item in listings if not has_cached_detail(item["cached"])]
+    if pending:
+        workers = min(DETAIL_WORKERS, len(pending))
         with ThreadPoolExecutor(max_workers=workers) as executor:
             futures = {
                 executor.submit(_detail_text, requests.Session(), item["source_url"]): item
-                for item in listings
+                for item in pending
             }
             for future in as_completed(futures):
                 item = futures[future]
@@ -113,10 +116,12 @@ def scrape_jobs2web(agency: dict) -> list[dict]:
 
     jobs = []
     for item in listings:
-        detail_text = detail_texts.get(item["source_url"], "")
-        combined = clean_text(" ".join([item["raw_context"], detail_text]))
+        cached = item["cached"]
+        live_detail = detail_texts.get(item["source_url"], "")
+        detail_text = live_detail or cached_detail_text(cached)
+        combined = clean_text(" ".join([item["raw_context"], live_detail or cached.get("salary_text", "")]))
         location = _field_from_context(combined, "Location")
-        city = location.split(",")[0].strip() if location else agency["city"]
+        city = location.split(",")[0].strip() if location else cached.get("city") or agency["city"]
         state = agency["state"]
 
         jobs.append(
@@ -127,13 +132,13 @@ def scrape_jobs2web(agency: dict) -> list[dict]:
                 state=state,
                 source_url=item["source_url"],
                 platform=agency["platform"],
-                salary_text=extract_salary(combined),
-                posted_date=_field_from_context(combined, "Date"),
-                description=detail_text,
+                salary_text=extract_salary(combined) if live_detail else cached.get("salary_text", ""),
+                posted_date=_field_from_context(combined, "Date") or cached.get("posted_date", ""),
+                description=detail_text or cached.get("description", ""),
                 raw_context=combined,
                 extra_fields={
-                    "requisition_id": _field_from_context(combined, "Req ID"),
-                    "department": _field_from_context(combined, "Job Function"),
+                    "requisition_id": _field_from_context(combined, "Req ID") or cached.get("requisition_id", ""),
+                    "department": _field_from_context(combined, "Job Function") or cached.get("department", ""),
                 },
             )
         )
