@@ -1,10 +1,13 @@
+import os
 import re
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from urllib.parse import urljoin
 
 import requests
 from bs4 import BeautifulSoup
 
 from normalizer import clean_text, extract_salary, normalize_job
+from scrapers.detail_cache import cached_detail_text, cached_job, has_cached_detail
 
 
 HEADERS = {
@@ -15,6 +18,16 @@ HEADERS = {
 }
 
 DEFAULT_LISTING_PATH = "/go/View-All-Jobs/8606400/"
+
+
+def _env_int(name: str, default: int) -> int:
+    try:
+        return max(1, int(os.getenv(name, str(default))))
+    except ValueError:
+        return default
+
+
+DETAIL_WORKERS = _env_int("SUCCESSFACTORS_DETAIL_WORKERS", 8)
 
 
 def _extract_field(text: str, label: str) -> str:
@@ -40,7 +53,7 @@ def scrape_successfactors(agency: dict) -> list[dict]:
     response.raise_for_status()
 
     soup = BeautifulSoup(response.text, "lxml")
-    jobs = []
+    entries = []
     seen_urls = set()
 
     for link in soup.select("a.jobTitle-link[href]"):
@@ -52,22 +65,53 @@ def scrape_successfactors(agency: dict) -> list[dict]:
 
         row = link.find_parent(class_="job-row") or link.find_parent()
         raw_context = clean_text(row.get_text(" ", strip=True)) if row else title
-        detail_text = _detail_text(session, source_url)
-        combined_context = clean_text(" ".join(value for value in [raw_context, detail_text] if value))
         city = _extract_field(raw_context, "City") or agency["city"]
         department = _extract_field(raw_context, "Department")
-        salary_text = extract_salary(detail_text)
+        cached = cached_job(agency["agency"], source_url=source_url, title=title)
+        entries.append(
+            {
+                "title": title,
+                "source_url": source_url,
+                "raw_context": raw_context,
+                "city": city,
+                "department": department,
+                "cached": cached,
+            }
+        )
+
+    details = {}
+    pending = [entry for entry in entries if not has_cached_detail(entry["cached"])]
+    if pending:
+        workers = min(DETAIL_WORKERS, len(pending))
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            futures = {
+                executor.submit(_detail_text, requests.Session(), entry["source_url"]): entry
+                for entry in pending
+            }
+            for future in as_completed(futures):
+                entry = futures[future]
+                details[entry["source_url"]] = future.result()
+
+    jobs = []
+    for entry in entries:
+        cached = entry["cached"]
+        live_detail = details.get(entry["source_url"])
+        detail_text = live_detail or cached_detail_text(cached)
+        combined_context = clean_text(
+            " ".join(value for value in [entry["raw_context"], live_detail or cached.get("salary_text", "")] if value)
+        )
+        salary_text = extract_salary(detail_text) if live_detail else cached.get("salary_text", "")
 
         jobs.append(
             normalize_job(
-                title=title,
+                title=entry["title"],
                 agency=agency["agency"],
-                city=city,
+                city=entry["city"],
                 state=agency["state"],
-                source_url=source_url,
+                source_url=entry["source_url"],
                 platform=agency["platform"],
-                salary_text=salary_text,
-                description=department,
+                salary_text=salary_text or cached.get("salary_text", ""),
+                description=detail_text or entry["department"],
                 raw_context=combined_context,
             )
         )

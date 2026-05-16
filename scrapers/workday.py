@@ -6,7 +6,8 @@ from urllib.parse import urlparse
 import requests
 from bs4 import BeautifulSoup
 
-from normalizer import clean_text, normalize_job
+from normalizer import clean_text, extract_salary, normalize_job
+from scrapers.detail_cache import cached_job, has_cached_detail
 
 
 HEADERS = {
@@ -140,6 +141,7 @@ def scrape_workday(agency: dict) -> list[dict]:
                     "posting": posting,
                     "external_path": external_path,
                     "source_url": source_url,
+                    "cached": cached_job(agency["agency"], source_url=source_url, title=title),
                 }
             )
 
@@ -147,8 +149,9 @@ def scrape_workday(agency: dict) -> list[dict]:
             break
 
     details = {}
-    if postings_to_fetch:
-        workers = min(DETAIL_WORKERS, len(postings_to_fetch))
+    pending = [item for item in postings_to_fetch if not has_cached_detail(item["cached"])]
+    if pending:
+        workers = min(DETAIL_WORKERS, len(pending))
         with ThreadPoolExecutor(max_workers=workers) as executor:
             futures = {
                 executor.submit(
@@ -159,7 +162,7 @@ def scrape_workday(agency: dict) -> list[dict]:
                     site,
                     item["external_path"],
                 ): item
-                for item in postings_to_fetch
+                for item in pending
             }
             for future in as_completed(futures):
                 item = futures[future]
@@ -169,15 +172,19 @@ def scrape_workday(agency: dict) -> list[dict]:
     for item in postings_to_fetch:
         posting = item["posting"]
         detail = details.get(item["source_url"], {})
+        cached = item["cached"]
         location = (
             clean_text(detail.get("location"))
             or _first_text(detail.get("additionalLocations"))
             or clean_text(posting.get("locationsText"))
+            or clean_text(", ".join(value for value in [cached.get("city"), cached.get("state")] if value))
         )
-        city = location.split(",")[0].strip() if location else agency["city"]
-        description = _strip_html(detail.get("jobDescription"))
-        posted_date = clean_text(detail.get("startDate") or posting.get("postedOn"))
-        req_id = clean_text(detail.get("jobReqId") or detail.get("jobRequisitionId"))
+        city = location.split(",")[0].strip() if location else cached.get("city") or agency["city"]
+        description = _strip_html(detail.get("jobDescription")) or cached.get("description", "")
+        posted_date = clean_text(detail.get("startDate") or posting.get("postedOn") or cached.get("posted_date"))
+        req_id = clean_text(detail.get("jobReqId") or detail.get("jobRequisitionId") or cached.get("requisition_id"))
+        salary_text = extract_salary(description) if detail else cached.get("salary_text", "")
+        context_description = description if detail else ""
         raw_context = clean_text(
             " ".join(
                 str(value)
@@ -188,7 +195,8 @@ def scrape_workday(agency: dict) -> list[dict]:
                     req_id,
                     detail.get("jobProfile"),
                     detail.get("timeType"),
-                    description,
+                    salary_text,
+                    context_description,
                 ]
                 if value
             )
@@ -202,12 +210,13 @@ def scrape_workday(agency: dict) -> list[dict]:
                 state=agency["state"],
                 source_url=item["source_url"],
                 platform=agency["platform"],
+                salary_text=salary_text,
                 posted_date=posted_date,
                 description=description,
                 raw_context=raw_context,
                 extra_fields={
                     "requisition_id": req_id,
-                    "employment_type": clean_text(detail.get("timeType")),
+                    "employment_type": clean_text(detail.get("timeType")) or cached.get("employment_type", ""),
                 },
             )
         )

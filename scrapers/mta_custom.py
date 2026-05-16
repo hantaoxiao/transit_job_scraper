@@ -76,8 +76,8 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
-MTA_JINA_LIST_WORKERS = _env_int("MTA_JINA_LIST_WORKERS", 1)
-MTA_JINA_DETAIL_WORKERS = _env_int("MTA_JINA_DETAIL_WORKERS", 4)
+MTA_JINA_LIST_WORKERS = _env_int("MTA_JINA_LIST_WORKERS", 4)
+MTA_JINA_DETAIL_WORKERS = _env_int("MTA_JINA_DETAIL_WORKERS", 8)
 MTA_JINA_RETRIES = _env_int("MTA_JINA_RETRIES", 3)
 
 

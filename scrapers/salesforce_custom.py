@@ -1,4 +1,6 @@
+import os
 import re
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from urllib.parse import urljoin, urlparse
 from urllib.parse import parse_qs
 
@@ -6,6 +8,7 @@ import requests
 from bs4 import BeautifulSoup
 
 from normalizer import clean_text, extract_salary, normalize_job
+from scrapers.detail_cache import cached_detail_text, cached_job, has_cached_detail
 
 
 HEADERS = {
@@ -34,6 +37,16 @@ BAD_TITLES = {
     "return to list",
     "new user",
 }
+
+
+def _env_int(name: str, default: int) -> int:
+    try:
+        return max(1, int(os.getenv(name, str(default))))
+    except ValueError:
+        return default
+
+
+DETAIL_WORKERS = _env_int("SALESFORCE_DETAIL_WORKERS", 6)
 
 
 def _base_url(url: str) -> str:
@@ -207,8 +220,8 @@ def _parse_table_jobs(soup: BeautifulSoup, page_url: str, agency: dict) -> list[
 
 def scrape_salesforce_custom(agency: dict) -> list[dict]:
     session = requests.Session()
-    jobs = []
-    seen_ids = set()
+    summaries = []
+    seen_urls = set()
 
     for url in _candidate_urls(agency["jobs_url"]):
         try:
@@ -225,11 +238,41 @@ def scrape_salesforce_custom(agency: dict) -> list[dict]:
             page_jobs = _parse_table_jobs(soup, url, agency)
 
         for summary in page_jobs:
-            detail_text = _detail_page_text(session, summary["source_url"])
-            job = _job_from_summary(summary, agency, detail_text)
-            if job["job_id"] in seen_ids:
+            if summary["source_url"] in seen_urls:
                 continue
-            seen_ids.add(job["job_id"])
-            jobs.append(job)
+            seen_urls.add(summary["source_url"])
+            summary["cached"] = cached_job(
+                agency["agency"],
+                source_url=summary["source_url"],
+                requisition_id=summary.get("requisition_id", ""),
+                title=summary["title"],
+            )
+            summaries.append(summary)
+
+    detail_texts = {}
+    pending = [summary for summary in summaries if not has_cached_detail(summary["cached"])]
+    if pending:
+        workers = min(DETAIL_WORKERS, len(pending))
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            futures = {
+                executor.submit(_detail_page_text, requests.Session(), summary["source_url"]): summary
+                for summary in pending
+            }
+            for future in as_completed(futures):
+                summary = futures[future]
+                detail_texts[summary["source_url"]] = future.result()
+
+    jobs = []
+    seen_ids = set()
+    for summary in summaries:
+        cached = summary["cached"]
+        detail_text = detail_texts.get(summary["source_url"]) or cached_detail_text(cached)
+        job = _job_from_summary(summary, agency, detail_text)
+        if not job.get("salary_text") and cached.get("salary_text"):
+            job = _job_from_summary(summary, agency, clean_text(" ".join([detail_text, cached["salary_text"]])))
+        if job["job_id"] in seen_ids:
+            continue
+        seen_ids.add(job["job_id"])
+        jobs.append(job)
 
     return jobs
