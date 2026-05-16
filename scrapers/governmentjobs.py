@@ -1,5 +1,6 @@
 import os
 import re
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from urllib.parse import parse_qs, urljoin, urlparse
 
@@ -26,6 +27,7 @@ def _env_int(name: str, default: int) -> int:
 
 
 DETAIL_WORKERS = _env_int("GOVJOBS_DETAIL_WORKERS", 4)
+REQUEST_RETRIES = _env_int("GOVJOBS_RETRIES", 3)
 
 
 BAD_LINK_TEXT = {
@@ -70,6 +72,34 @@ def _agency_folder(url: str) -> str:
     raise ValueError(f"Cannot parse GovernmentJobs agency folder from URL: {url}")
 
 
+def _retryable_http_error(exc: requests.HTTPError) -> bool:
+    response = exc.response
+    return bool(response is not None and response.status_code in {429, 500, 502, 503, 504})
+
+
+def _get_with_retries(session: requests.Session, url: str, **kwargs) -> requests.Response:
+    last_error = None
+    kwargs.setdefault("timeout", (12, 45))
+
+    for attempt in range(REQUEST_RETRIES):
+        try:
+            response = session.get(url, **kwargs)
+            response.raise_for_status()
+            return response
+        except requests.HTTPError as exc:
+            last_error = exc
+            if not _retryable_http_error(exc) or attempt == REQUEST_RETRIES - 1:
+                raise
+        except (requests.ConnectionError, requests.Timeout) as exc:
+            last_error = exc
+            if attempt == REQUEST_RETRIES - 1:
+                raise
+
+        time.sleep(min(2 * (attempt + 1), 8))
+
+    raise last_error or RuntimeError("GovernmentJobs request failed")
+
+
 def _search_params(agency: dict, page: int) -> dict:
     parsed = urlparse(agency["jobs_url"])
     query = parse_qs(parsed.query)
@@ -90,8 +120,7 @@ def _search_params(agency: dict, page: int) -> dict:
 
 def _detail_fields(session: requests.Session, source_url: str) -> dict:
     try:
-        response = session.get(source_url, headers=HEADERS, timeout=30)
-        response.raise_for_status()
+        response = _get_with_retries(session, source_url, headers=HEADERS)
     except requests.RequestException:
         return {}
 
@@ -186,13 +215,12 @@ def scrape_governmentjobs(agency: dict) -> list[dict]:
     exclude_terms = [term.lower() for term in agency.get("exclude_terms", [])]
 
     for page in range(1, MAX_PAGES + 1):
-        response = session.get(
+        response = _get_with_retries(
+            session,
             SEARCH_ENDPOINT,
             params=_search_params(agency, page),
             headers={**HEADERS, "X-Requested-With": "XMLHttpRequest"},
-            timeout=30,
         )
-        response.raise_for_status()
 
         soup = BeautifulSoup(response.text, "lxml")
         links = soup.select('a[href*="/careers/"][href*="/jobs/"]')

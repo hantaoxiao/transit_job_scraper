@@ -2,6 +2,7 @@ import csv
 import os
 import re
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Optional
 from urllib.parse import urljoin, urlparse
@@ -22,6 +23,8 @@ HEADERS = {
 SEARCH_URL = "https://careers.mta.org/search/jobs"
 HOME_URL = "https://careers.mta.org/"
 MAX_PAGES = 20
+JINA_READER_PREFIX = "https://r.jina.ai/http://"
+JINA_PER_PAGE = 100
 BROWSER_PROFILE_DIR = Path(".mta_browser_profile")
 JOB_LINK_SELECTOR = "a[href^='/jobs/'], a[href^='https://careers.mta.org/jobs/']"
 DETAIL_READY_SELECTOR = "text=Description"
@@ -66,6 +69,18 @@ CACHE_NUMBER_FIELDS = {
 }
 
 
+def _env_int(name: str, default: int) -> int:
+    try:
+        return max(1, int(os.getenv(name, str(default))))
+    except ValueError:
+        return default
+
+
+MTA_JINA_LIST_WORKERS = _env_int("MTA_JINA_LIST_WORKERS", 1)
+MTA_JINA_DETAIL_WORKERS = _env_int("MTA_JINA_DETAIL_WORKERS", 4)
+MTA_JINA_RETRIES = _env_int("MTA_JINA_RETRIES", 3)
+
+
 def _extract_field(text: str, label: str) -> str:
     match = re.search(rf"{re.escape(label)}:\s*(.*?)(?=\s+[A-Z][A-Za-z ]+:\s*|$)", text)
     return clean_text(match.group(1)) if match else ""
@@ -73,6 +88,14 @@ def _extract_field(text: str, label: str) -> str:
 
 def _extract_labeled_value(text: str, label: str) -> str:
     match = re.search(rf"(?im)^{re.escape(label)}:\s*(.+)$", text)
+    return clean_text(match.group(1)) if match else ""
+
+
+def _extract_labeled_section(text: str, label: str) -> str:
+    match = re.search(
+        rf"(?ims)^{re.escape(label)}:\s*(.+?)(?=^[A-Z][A-Za-z0-9 /&().,-]{{1,80}}:\s*|\Z)",
+        text,
+    )
     return clean_text(match.group(1)) if match else ""
 
 
@@ -114,6 +137,30 @@ def _coerce_cached_job(row: dict) -> dict:
             pass
 
     return job
+
+
+def _cached_job_details(job: dict) -> dict:
+    detail_keys = [
+        "all_meaningful_info",
+        "business_unit",
+        "closing_date",
+        "department",
+        "detail_location",
+        "division_unit",
+        "employment_type",
+        "full_job_description",
+        "hours_of_work",
+        "mta_job_id",
+        "reports_to",
+        "salary_text",
+        "work_location",
+    ]
+    details = {key: job.get(key, "") for key in detail_keys if job.get(key)}
+    if job.get("description") and not details.get("full_job_description"):
+        details["full_job_description"] = job["description"]
+    if job.get("raw_context") and not details.get("all_meaningful_info"):
+        details["all_meaningful_info"] = job["raw_context"]
+    return details
 
 
 def _load_existing_mta_cache(agency: dict) -> dict[str, dict]:
@@ -355,6 +402,179 @@ def _parse_search_page(html: str, agency: dict, normalize: bool = True) -> list[
     return jobs
 
 
+def _jina_url(url: str) -> str:
+    return f"{JINA_READER_PREFIX}{url}"
+
+
+def _jina_text(url: str) -> str:
+    last_error = None
+    for attempt in range(MTA_JINA_RETRIES):
+        try:
+            response = requests.get(_jina_url(url), headers=HEADERS, timeout=90)
+            response.raise_for_status()
+            if "Markdown Content:" in response.text:
+                return response.text.split("Markdown Content:", 1)[1]
+            return response.text
+        except requests.RequestException as exc:
+            last_error = exc
+            if attempt == MTA_JINA_RETRIES - 1:
+                raise
+            time.sleep(min(3 * (attempt + 1), 10))
+    raise last_error or RuntimeError("MTA Jina fallback request failed")
+
+
+def _jina_search_url(page: int) -> str:
+    if page == 1:
+        return f"{SEARCH_URL}?per_page={JINA_PER_PAGE}"
+    return f"{SEARCH_URL}/in?page={page}&per_page={JINA_PER_PAGE}"
+
+
+def _parse_jina_total_pages(text: str) -> int:
+    match = re.search(r"Showing\s+\d+\s*-\s*\d+\s+of\s+(\d+)\s+results", text, flags=re.IGNORECASE)
+    if not match:
+        return 1
+    total = int(match.group(1))
+    return max(1, min(MAX_PAGES, (total + JINA_PER_PAGE - 1) // JINA_PER_PAGE))
+
+
+def _parse_jina_search_page(text: str, agency: dict, normalize: bool = False) -> list[dict]:
+    jobs = []
+    seen_urls = set()
+    pattern = re.compile(
+        r"\[([^\]]+)\]\((https://careers\.mta\.org/jobs/[^)]+)\)\s+"
+        r"Job ID:\s*([^\n]+)\s+"
+        r"Location:\s*([^\n]+)\s+"
+        r"Department:\s*([^\n]*)\s+"
+        r"Date Posted:\s*([^\n]+)",
+        flags=re.DOTALL,
+    )
+
+    for title, source_url, job_id, location, department, posted_date in pattern.findall(text):
+        source_url = source_url.split("#", 1)[0]
+        if source_url in seen_urls:
+            continue
+        seen_urls.add(source_url)
+        raw_context = clean_text(
+            " ".join(
+                [
+                    f"Job ID: {job_id}",
+                    f"Location: {location}",
+                    f"Department: {department}",
+                    f"Date Posted: {posted_date}",
+                ]
+            )
+        )
+        summary = {
+            "title": clean_text(title),
+            "source_url": source_url,
+            "location": clean_text(location),
+            "posted_date": clean_text(posted_date),
+            "department": clean_text(department),
+            "raw_context": raw_context,
+        }
+        jobs.append(_build_mta_job(summary, agency) if normalize else summary)
+
+    return jobs
+
+
+def _jina_detail_to_plain_text(markdown: str) -> str:
+    def label_replacement(match: re.Match) -> str:
+        return f"\n{match.group(1).rstrip(':')}: "
+
+    text = re.sub(r"\*\*([^*]+)\*\*\s*:?\s*", label_replacement, markdown)
+    text = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", text)
+    text = re.sub(r"[*_#>`]+", " ", text)
+    return "\n".join(clean_text(line) for line in text.splitlines() if clean_text(line))
+
+
+def _parse_jina_detail_page(markdown: str) -> dict:
+    meaningful_text = _jina_detail_to_plain_text(markdown)
+    details = {
+        "all_meaningful_info": meaningful_text,
+        "full_job_description": meaningful_text,
+        "department": _extract_labeled_value(meaningful_text, "Department"),
+        "authority": _extract_labeled_value(meaningful_text, "Authority"),
+        "division_unit": _extract_labeled_value(meaningful_text, "Division/Unit"),
+        "reports_to": _extract_labeled_value(meaningful_text, "Reporting Manager (If Applicable)"),
+        "work_location": _extract_labeled_value(meaningful_text, "Work Location"),
+        "hours_of_work": _extract_labeled_value(meaningful_text, "Hours of Work"),
+    }
+
+    compensation = (
+        _extract_labeled_section(meaningful_text, "Salary Range")
+        or _extract_labeled_section(meaningful_text, "Compensation")
+        or _extract_labeled_section(meaningful_text, "Salary")
+    )
+    if compensation:
+        details["salary_text"] = compensation
+
+    closing_date = (
+        _extract_labeled_value(meaningful_text, "Deadline (if Applicable)")
+        or _extract_labeled_value(meaningful_text, "Metro-North Closing Date")
+    )
+    if closing_date:
+        details["closing_date"] = closing_date
+
+    return {key: value for key, value in details.items() if value}
+
+
+def _fetch_jina_detail(source_url: str) -> dict:
+    try:
+        return _parse_jina_detail_page(_jina_text(source_url))
+    except requests.RequestException:
+        return {}
+
+
+def _scrape_mta_jina(agency: dict) -> list[dict]:
+    print("MTA blocked direct requests; using live text-rendered MTA listing fallback.")
+    first_page = _jina_text(_jina_search_url(1))
+    summaries = _parse_jina_search_page(first_page, agency, normalize=False)
+    total_pages = _parse_jina_total_pages(first_page)
+
+    if total_pages > 1:
+        with ThreadPoolExecutor(max_workers=min(MTA_JINA_LIST_WORKERS, total_pages - 1)) as executor:
+            futures = {executor.submit(_jina_text, _jina_search_url(page)): page for page in range(2, total_pages + 1)}
+            for future in as_completed(futures):
+                summaries.extend(_parse_jina_search_page(future.result(), agency, normalize=False))
+
+    deduped_summaries = []
+    seen_urls = set()
+    for summary in summaries:
+        source_url = summary["source_url"]
+        if source_url in seen_urls:
+            continue
+        seen_urls.add(source_url)
+        deduped_summaries.append(summary)
+
+    summary_by_url = {summary["source_url"]: summary for summary in deduped_summaries}
+    cached_jobs = _load_existing_mta_cache(agency)
+    new_urls = [source_url for source_url in summary_by_url if source_url not in cached_jobs]
+    details_by_url = {}
+
+    if new_urls:
+        print(f"Fetching live MTA details for {len(new_urls)} new or uncached jobs.")
+        with ThreadPoolExecutor(max_workers=min(MTA_JINA_DETAIL_WORKERS, len(new_urls))) as executor:
+            futures = {executor.submit(_fetch_jina_detail, source_url): source_url for source_url in new_urls}
+            for future in as_completed(futures):
+                details_by_url[futures[future]] = future.result()
+
+    jobs = []
+    reused_details = 0
+    for source_url, summary in summary_by_url.items():
+        if source_url in details_by_url:
+            jobs.append(_build_mta_job(summary, agency, details_by_url[source_url]))
+        elif source_url in cached_jobs:
+            reused_details += 1
+            jobs.append(_build_mta_job(summary, agency, _cached_job_details(cached_jobs[source_url])))
+        else:
+            jobs.append(_build_mta_job(summary, agency))
+
+    if reused_details:
+        print(f"Reused cached MTA details for {reused_details}/{len(summary_by_url)} currently listed jobs.")
+
+    return _dedupe_jobs(jobs)
+
+
 def _scrape_mta_requests(agency: dict) -> list[dict]:
     jobs = []
     session = requests.Session()
@@ -493,11 +713,7 @@ def scrape_mta(agency: dict) -> list[dict]:
             raise
 
         if os.getenv("GITHUB_ACTIONS", "").lower() == "true" or os.getenv("CI", "").lower() == "true":
-            cached_jobs = _load_existing_mta_cache(agency)
-            if cached_jobs:
-                print(f"MTA blocked the requests scraper in CI; using {len(cached_jobs)} cached MTA jobs.")
-                return _dedupe_jobs(list(cached_jobs.values()))
-            raise RuntimeError("MTA blocked the requests scraper in CI; skipping interactive browser fallback.")
+            return _scrape_mta_jina(agency)
 
         print("MTA blocked the requests scraper; trying local browser fallback.")
         return _scrape_mta_browser(agency)
