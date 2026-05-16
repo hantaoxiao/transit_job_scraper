@@ -27,7 +27,10 @@ def _env_int(name: str, default: int) -> int:
 
 
 DETAIL_WORKERS = _env_int("GOVJOBS_DETAIL_WORKERS", 4)
-REQUEST_RETRIES = _env_int("GOVJOBS_RETRIES", 3)
+REQUEST_RETRIES = _env_int("GOVJOBS_RETRIES", 2)
+CONNECT_TIMEOUT = _env_int("GOVJOBS_CONNECT_TIMEOUT", 5)
+READ_TIMEOUT = _env_int("GOVJOBS_READ_TIMEOUT", 30)
+FETCH_DETAILS = os.getenv("GOVJOBS_FETCH_DETAILS", "").lower() in {"1", "true", "yes"}
 
 
 BAD_LINK_TEXT = {
@@ -79,7 +82,7 @@ def _retryable_http_error(exc: requests.HTTPError) -> bool:
 
 def _get_with_retries(session: requests.Session, url: str, **kwargs) -> requests.Response:
     last_error = None
-    kwargs.setdefault("timeout", (12, 45))
+    kwargs.setdefault("timeout", (CONNECT_TIMEOUT, READ_TIMEOUT))
 
     for attempt in range(REQUEST_RETRIES):
         try:
@@ -95,7 +98,7 @@ def _get_with_retries(session: requests.Session, url: str, **kwargs) -> requests
             if attempt == REQUEST_RETRIES - 1:
                 raise
 
-        time.sleep(min(2 * (attempt + 1), 8))
+        time.sleep(min(attempt + 1, 4))
 
     raise last_error or RuntimeError("GovernmentJobs request failed")
 
@@ -150,6 +153,62 @@ def _detail_fields(session: requests.Session, source_url: str) -> dict:
 def _detail_fields_for_url(source_url: str) -> dict:
     with requests.Session() as session:
         return _detail_fields(session, source_url)
+
+
+def _parse_listing_fields(item, agency: dict) -> dict:
+    meta_items = [clean_text(node.get_text(" ", strip=True)) for node in item.select(".list-meta li")]
+    meta_items = [text for text in meta_items if text]
+
+    salary_text = next((text for text in meta_items if "$" in text), "")
+    employment_type = ""
+    if salary_text:
+        employment_type = clean_text(re.split(r"\s+-\s+\$", salary_text, maxsplit=1)[0])
+        if employment_type == salary_text:
+            employment_type = ""
+    else:
+        employment_type = next(
+            (
+                text
+                for text in meta_items
+                if re.search(r"\b(full[- ]time|part[- ]time|temporary|regular|intern|seasonal)\b", text, re.I)
+            ),
+            "",
+        )
+
+    location = ""
+    for text in meta_items:
+        if text == salary_text:
+            continue
+        if re.match(r"^(Category|Department|Division|Cost Center|Executive Office):", text, flags=re.I):
+            continue
+        if text == employment_type:
+            continue
+        location = text
+        break
+
+    category = ""
+    department = clean_text((item.select_one(".item-details-link") or {}).get("data-department-name", ""))
+    for text in meta_items:
+        if text.lower().startswith("category:"):
+            category = clean_text(text.split(":", 1)[1])
+        elif text.lower().startswith(("department:", "division:", "executive office:", "cost center:")) and not department:
+            department = clean_text(text.split(":", 1)[1])
+
+    description_node = item.select_one(".list-entry")
+    description = clean_text(description_node.get_text(" ", strip=True)) if description_node else ""
+    posted_node = item.select_one(".list-entry-starts")
+    closing_node = item.select_one(".list-entry-ends")
+
+    return {
+        "salary_text": salary_text,
+        "location": location,
+        "posted_date": clean_text(posted_node.get_text(" ", strip=True)) if posted_node else "",
+        "closing_date": clean_text(closing_node.get_text(" ", strip=True)) if closing_node else "",
+        "description": description,
+        "employment_type": employment_type,
+        "department": department,
+        "category": category,
+    }
 
 
 def _extract_label(text: str, label: str) -> str:
@@ -245,20 +304,14 @@ def scrape_governmentjobs(agency: dict) -> list[dict]:
 
             parent = link.find_parent("li", class_="list-item") or link.find_parent()
             raw_context = clean_text(parent.get_text(" ", strip=True)) if parent else title
-            listing_salary = ""
-            if parent:
-                for item in parent.select(".list-meta li"):
-                    text = clean_text(item.get_text(" ", strip=True))
-                    if "$" in text:
-                        listing_salary = text
-                        break
+            listing = _parse_listing_fields(parent, agency) if parent else {}
 
             candidates.append(
                 {
                     "title": title,
                     "source_url": full_url,
                     "raw_context": raw_context,
-                    "listing_salary": listing_salary,
+                    "listing": listing,
                 }
             )
 
@@ -269,22 +322,36 @@ def scrape_governmentjobs(agency: dict) -> list[dict]:
         return []
 
     details_by_url = {}
-    with ThreadPoolExecutor(max_workers=DETAIL_WORKERS) as executor:
-        futures = {executor.submit(_detail_fields_for_url, item["source_url"]): item["source_url"] for item in candidates}
-        for future in as_completed(futures):
-            source_url = futures[future]
-            try:
-                details_by_url[source_url] = future.result()
-            except Exception:
-                details_by_url[source_url] = {}
+    detail_candidates = [
+        item
+        for item in candidates
+        if FETCH_DETAILS and not item.get("listing", {}).get("salary_text")
+    ]
+    if detail_candidates:
+        with ThreadPoolExecutor(max_workers=DETAIL_WORKERS) as executor:
+            futures = {
+                executor.submit(_detail_fields_for_url, item["source_url"]): item["source_url"]
+                for item in detail_candidates
+            }
+            for future in as_completed(futures):
+                source_url = futures[future]
+                try:
+                    details_by_url[source_url] = future.result()
+                except Exception:
+                    details_by_url[source_url] = {}
 
     jobs = []
     for item in candidates:
         title = item["title"]
         source_url = item["source_url"]
+        listing = item.get("listing", {})
         detail = details_by_url.get(source_url, {})
-        city, state = _city_state_from_location(detail.get("location", ""), agency["city"], agency["state"])
-        description = detail.get("description", "")
+        city, state = _city_state_from_location(
+            detail.get("location") or listing.get("location", ""),
+            agency["city"],
+            agency["state"],
+        )
+        description = detail.get("description") or listing.get("description", "")
         raw_context = clean_text(" ".join([item["raw_context"], description]))
         search_text = f"{title} {raw_context}".lower()
         if include_terms and not any(term in search_text for term in include_terms):
@@ -300,15 +367,16 @@ def scrape_governmentjobs(agency: dict) -> list[dict]:
                 state=state,
                 source_url=source_url,
                 platform=agency["platform"],
-                salary_text=detail.get("salary_text") or item["listing_salary"],
-                posted_date=detail.get("posted_date", ""),
-                closing_date=detail.get("closing_date", ""),
+                salary_text=detail.get("salary_text") or listing.get("salary_text", ""),
+                posted_date=detail.get("posted_date") or listing.get("posted_date", ""),
+                closing_date=detail.get("closing_date") or listing.get("closing_date", ""),
                 description=description,
                 raw_context=raw_context,
                 extra_fields={
                     "requisition_id": detail.get("requisition_id", ""),
-                    "employment_type": detail.get("employment_type", ""),
-                    "department": detail.get("department", ""),
+                    "employment_type": detail.get("employment_type") or listing.get("employment_type", ""),
+                    "department": detail.get("department") or listing.get("department", ""),
+                    "source_category": listing.get("category", ""),
                 },
             )
         )
