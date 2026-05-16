@@ -227,6 +227,8 @@ The workflow installs dependencies, installs Playwright Chromium, restores the p
 
 In CI, MTA first tries direct requests. If the MTA site blocks GitHub Actions, the scraper uses a live text-rendered MTA listing fallback so the open job list stays current, enriches new MTA jobs from live detail pages, and reuses cached detail fields only for still-open jobs it has already seen.
 
+GovernmentJobs agencies are listing-first for scheduled runs. The listing endpoint already includes salary, schedule, department/category hints, posted/closing text, and a description preview, so the scraper avoids opening every detail page unless `GOVJOBS_FETCH_DETAILS=1` is explicitly set.
+
 Outputs:
 
 ```text
