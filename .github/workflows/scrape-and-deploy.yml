@@ -3,8 +3,8 @@ name: Scrape and deploy transit jobs
 on:
   workflow_dispatch:
   schedule:
-    - cron: "17 7-19/2 * * 1-5"
-      timezone: "America/New_York"
+    # GitHub cron uses UTC. This is 7 AM-7 PM Eastern during daylight saving time.
+    - cron: "17 11-23/2 * * 1-5"
 
 concurrency:
   group: transit-job-refresh
@@ -27,7 +27,12 @@ jobs:
     env:
       PYTHONUNBUFFERED: "1"
       SCRAPER_WORKERS: "6"
-      GOVJOBS_DETAIL_WORKERS: "4"
+      GOVJOBS_AGENCY_WORKERS: "2"
+      GOVJOBS_DETAIL_WORKERS: "2"
+      GOVJOBS_RETRIES: "3"
+      MTA_JINA_LIST_WORKERS: "1"
+      MTA_JINA_DETAIL_WORKERS: "4"
+      MTA_JINA_RETRIES: "3"
       WORKDAY_DETAIL_WORKERS: "8"
       UKG_DETAIL_WORKERS: "8"
       JOBS2WEB_DETAIL_WORKERS: "8"
@@ -48,8 +53,23 @@ jobs:
       - name: Install browser dependencies
         run: python -m playwright install --with-deps chromium
 
+      - name: Restore previous scrape cache
+        uses: actions/cache/restore@v4
+        with:
+          path: output/transit_jobs.csv
+          key: transit-jobs-output-${{ github.run_id }}
+          restore-keys: |
+            transit-jobs-output-
+
       - name: Scrape jobs and build static data
         run: python main.py
+
+      - name: Save scrape cache
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: output/transit_jobs.csv
+          key: transit-jobs-output-${{ github.run_id }}
 
       - name: Upload CSV artifact
         if: always()

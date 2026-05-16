@@ -125,6 +125,7 @@ def _env_int(name: str, default: int) -> int:
 
 
 DEFAULT_SCRAPER_WORKERS = _env_int("SCRAPER_WORKERS", 6)
+DEFAULT_GOVJOBS_AGENCY_WORKERS = _env_int("GOVJOBS_AGENCY_WORKERS", 2)
 DEFAULT_RISKY_SCRAPER_TIMEOUT = _env_int("RISKY_SCRAPER_TIMEOUT", 180)
 SERIAL_PLATFORMS = {"mta_custom"}
 RISKY_PLATFORM_TIMEOUTS = {
@@ -339,7 +340,12 @@ def run_all_scrapers() -> list[dict]:
             _print_scrape_result(result)
         return all_jobs
 
-    parallel_agencies = [agency for agency in AGENCIES if agency["platform"] in PARALLEL_PLATFORMS]
+    governmentjobs_agencies = [agency for agency in AGENCIES if agency["platform"] == "governmentjobs"]
+    parallel_agencies = [
+        agency
+        for agency in AGENCIES
+        if agency["platform"] in PARALLEL_PLATFORMS and agency["platform"] != "governmentjobs"
+    ]
     serial_agencies = [agency for agency in AGENCIES if agency["platform"] in SERIAL_PLATFORMS]
     browser_agencies = [
         agency
@@ -352,6 +358,16 @@ def run_all_scrapers() -> list[dict]:
         print(f"Scraping {len(parallel_agencies)} HTTP/API agencies with {workers} workers", flush=True)
         with ThreadPoolExecutor(max_workers=workers) as executor:
             futures = {executor.submit(_scrape_agency, agency): agency for agency in parallel_agencies}
+            for future in as_completed(futures):
+                result = future.result()
+                all_jobs.extend(result["jobs"])
+                _print_scrape_result(result)
+
+    if governmentjobs_agencies and not force_sequential:
+        workers = min(DEFAULT_GOVJOBS_AGENCY_WORKERS, len(governmentjobs_agencies))
+        print(f"Scraping {len(governmentjobs_agencies)} GovernmentJobs agencies with {workers} workers", flush=True)
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            futures = {executor.submit(_scrape_agency, agency): agency for agency in governmentjobs_agencies}
             for future in as_completed(futures):
                 result = future.result()
                 all_jobs.extend(result["jobs"])
