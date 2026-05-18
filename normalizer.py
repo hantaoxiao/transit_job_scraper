@@ -10,6 +10,38 @@ def clean_text(text: Optional[str]) -> str:
     return " ".join(str(text).split()).strip()
 
 
+def repair_split_money(text: Optional[str]) -> str:
+    text = clean_text(text)
+    if not text:
+        return ""
+
+    text = re.sub(r"\$\s+(?=\d)", "$", text)
+    text = re.sub(r"(\$\d[\d,]*)\s+\.\s+(\d{1,2})\b", r"\1.\2", text)
+    split_money = re.compile(r"(\$\d[\d,]*)(?:\s+)(\d[\d,]*(?:\.\d+)?)")
+
+    def should_join(left: str, right: str) -> bool:
+        left_digits = left.lstrip("$")
+        if "," in right:
+            return True
+        if "," not in left_digits:
+            return False
+        last_group = left_digits.rsplit(",", 1)[-1]
+        return len(last_group) < 3 and right.replace(".", "").isdigit()
+
+    while True:
+        repaired = split_money.sub(
+            lambda match: (
+                f"{match.group(1)}{match.group(2)}"
+                if should_join(match.group(1), match.group(2))
+                else match.group(0)
+            ),
+            text,
+        )
+        if repaired == text:
+            return repaired
+        text = repaired
+
+
 def clean_date_text(text: Optional[str]) -> str:
     text = clean_text(text)
     if not text:
@@ -46,7 +78,7 @@ def make_job_id(agency: str, title: str, source_url: str) -> str:
 
 
 def extract_salary(text: Optional[str]) -> str:
-    text = clean_text(text)
+    text = repair_split_money(text)
     if not text:
         return ""
     text = re.sub(r"\bCompensatio\s+n\b", "Compensation", text, flags=re.IGNORECASE)
@@ -188,6 +220,9 @@ def extract_salary(text: Optional[str]) -> str:
             money_matches = list(re.finditer(r"\b\d{2,3}(?:,\d{3})+(?:\.\d+)?\b|\b\d{2,3}\.\d{2,6}\b", section))
         if money_matches:
             end = money_matches[-1].end()
+            unit_match = re.match(r"\s*(?:per\s+hour|/hour|/hr|hourly)\b", section[end:], flags=re.IGNORECASE)
+            if unit_match:
+                end += unit_match.end()
             extracted = clean_text(section[:end])
             if "$" not in extracted:
                 extracted = f"Compensation: {extracted}"
@@ -289,7 +324,7 @@ def _salary_range_display(salary_min: float, salary_max: float, unit: str) -> st
 
 
 def parse_salary(salary_text: Optional[str]) -> dict:
-    text = clean_text(salary_text)
+    text = repair_split_money(salary_text)
     if not text:
         return {
             "salary_display": "Salary not listed",

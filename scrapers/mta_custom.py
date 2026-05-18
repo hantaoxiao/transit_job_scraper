@@ -10,7 +10,7 @@ from urllib.parse import urljoin, urlparse
 import requests
 from bs4 import BeautifulSoup
 
-from normalizer import clean_text, normalize_job
+from normalizer import clean_text, normalize_job, repair_split_money
 
 
 HEADERS = {
@@ -87,13 +87,13 @@ def _extract_field(text: str, label: str) -> str:
 
 
 def _extract_labeled_value(text: str, label: str) -> str:
-    match = re.search(rf"(?im)^{re.escape(label)}:\s*(.+)$", text)
+    match = re.search(rf"(?im)^{re.escape(label)}\s*:\s*(.+)$", text)
     return clean_text(match.group(1)) if match else ""
 
 
 def _extract_labeled_section(text: str, label: str) -> str:
     match = re.search(
-        rf"(?ims)^{re.escape(label)}:\s*(.+?)(?=^[A-Z][A-Za-z0-9 /&().,-]{{1,80}}:\s*|\Z)",
+        rf"(?ims)^{re.escape(label)}\s*:\s*(.+?)(?=^[A-Z][A-Za-z0-9 /&().,-]{{1,80}}\s*:\s*|\Z)",
         text,
     )
     return clean_text(match.group(1)) if match else ""
@@ -322,9 +322,9 @@ def _parse_detail_page(html: str) -> dict:
     if closing_date:
         details["closing_date"] = closing_date
 
-    salary_text = _extract_labeled_value(meaningful_text, "Salary Range")
+    salary_text = _extract_labeled_section(meaningful_text, "Salary Range")
     if salary_text:
-        details["salary_text"] = salary_text
+        details["salary_text"] = repair_split_money(salary_text)
 
     if "Description" in lines:
         details["full_job_description"] = "\n".join(lines[lines.index("Description") + 1 :])
@@ -333,7 +333,7 @@ def _parse_detail_page(html: str) -> dict:
         value = _extract_labeled_value(meaningful_text, label)
         if value:
             key = "mta_" + re.sub(r"[^a-z0-9]+", "_", label.lower()).strip("_")
-            details[key] = value
+            details[key] = details["salary_text"] if label == "Salary Range" and details.get("salary_text") else value
 
     return details
 
@@ -347,6 +347,8 @@ def _build_mta_job(summary: dict, agency: dict, details: Optional[dict] = None) 
     department = details.get("department") or summary.get("department", "")
     description = details.get("full_job_description") or department
 
+    extra_fields = {key: value for key, value in details.items() if key != "salary_text"}
+
     return normalize_job(
         title=summary["title"],
         agency=agency["agency"],
@@ -359,7 +361,7 @@ def _build_mta_job(summary: dict, agency: dict, details: Optional[dict] = None) 
         closing_date=details.get("closing_date", ""),
         description=description,
         raw_context=all_info,
-        extra_fields=details,
+        extra_fields=extra_fields,
     )
 
 
@@ -506,7 +508,7 @@ def _parse_jina_detail_page(markdown: str) -> dict:
         or _extract_labeled_section(meaningful_text, "Salary")
     )
     if compensation:
-        details["salary_text"] = compensation
+        details["salary_text"] = repair_split_money(compensation)
 
     closing_date = (
         _extract_labeled_value(meaningful_text, "Deadline (if Applicable)")
