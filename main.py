@@ -133,7 +133,7 @@ FAILED_AGENCY_CACHE_MIN = _env_int("SCRAPER_FAILED_AGENCY_CACHE_MIN", 1)
 PARTIAL_AGENCY_CACHE_MIN = _env_int("SCRAPER_PARTIAL_AGENCY_CACHE_MIN", 50)
 SERIAL_PLATFORMS = {"mta_custom"}
 RISKY_PLATFORM_TIMEOUTS = {
-    "mta_custom": 300,
+    "mta_custom": _env_int("MTA_SCRAPER_TIMEOUT", 600),
     "peoplesoft_miami": 90,
     "via_custom": 45,
     "applicantpro": 60,

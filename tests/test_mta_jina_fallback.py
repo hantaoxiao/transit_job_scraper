@@ -51,6 +51,17 @@ SPLIT_CACHED_DIRECTOR = {
 
 
 class MtaJinaFallbackTests(unittest.TestCase):
+    def test_jina_url_uses_http_target_without_double_scheme(self):
+        url = mta_custom._jina_url("https://careers.mta.org/search/jobs/?per_page=100")
+
+        self.assertEqual(url, "https://r.jina.ai/http://careers.mta.org/search/jobs/?per_page=100")
+
+    def test_jina_search_pagination_uses_ci_readable_url_shape(self):
+        self.assertEqual(
+            mta_custom._jina_search_url(2),
+            "https://careers.mta.org/search/jobs/?page=2&per_page=100",
+        )
+
     def test_detects_jina_challenge_body(self):
         self.assertTrue(mta_custom._is_jina_unusable_text("Enable JavaScript and cookies to continue"))
 
@@ -81,6 +92,48 @@ class MtaJinaFallbackTests(unittest.TestCase):
                     with patch.object(mta_custom, "_fetch_jina_detail", return_value={}):
                         with self.assertRaisesRegex(RuntimeError, "no MTA cache"):
                             mta_custom._scrape_mta_jina(AGENCY)
+
+    def test_ci_scrape_tries_browser_before_jina_after_direct_block(self):
+        response = requests.Response()
+        response.status_code = 403
+        error = requests.HTTPError("blocked", response=response)
+
+        with patch.dict(os.environ, {"GITHUB_ACTIONS": "true"}):
+            with patch.object(mta_custom, "_scrape_mta_requests", side_effect=error):
+                with patch.object(mta_custom, "_scrape_mta_browser", return_value=[CACHED_JOB]) as browser:
+                    with patch.object(mta_custom, "_scrape_mta_jina") as jina:
+                        jobs = mta_custom.scrape_mta(AGENCY)
+
+        self.assertEqual(jobs, [CACHED_JOB])
+        browser.assert_called_once_with(AGENCY)
+        jina.assert_not_called()
+
+    def test_ci_scrape_tries_browser_after_direct_connection_error(self):
+        error = requests.ConnectionError("dns failed")
+
+        with patch.dict(os.environ, {"GITHUB_ACTIONS": "true"}):
+            with patch.object(mta_custom, "_scrape_mta_requests", side_effect=error):
+                with patch.object(mta_custom, "_scrape_mta_browser", return_value=[CACHED_JOB]) as browser:
+                    with patch.object(mta_custom, "_scrape_mta_jina") as jina:
+                        jobs = mta_custom.scrape_mta(AGENCY)
+
+        self.assertEqual(jobs, [CACHED_JOB])
+        browser.assert_called_once_with(AGENCY)
+        jina.assert_not_called()
+
+    def test_ci_scrape_falls_back_to_jina_if_browser_fails(self):
+        response = requests.Response()
+        response.status_code = 403
+        error = requests.HTTPError("blocked", response=response)
+
+        with patch.dict(os.environ, {"GITHUB_ACTIONS": "true"}):
+            with patch.object(mta_custom, "_scrape_mta_requests", side_effect=error):
+                with patch.object(mta_custom, "_scrape_mta_browser", side_effect=RuntimeError("browser failed")):
+                    with patch.object(mta_custom, "_scrape_mta_jina", return_value=[CACHED_JOB]) as jina:
+                        jobs = mta_custom.scrape_mta(AGENCY)
+
+        self.assertEqual(jobs, [CACHED_JOB])
+        jina.assert_called_once_with(AGENCY)
 
     def test_loads_mta_cache_from_actions_cache_and_checked_in_baseline(self):
         with tempfile.TemporaryDirectory() as tmpdir:

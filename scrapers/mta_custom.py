@@ -76,6 +76,13 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
+def _env_flag(name: str, default: bool = False) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.lower() in {"1", "true", "yes"}
+
+
 MTA_JINA_LIST_WORKERS = _env_int("MTA_JINA_LIST_WORKERS", 4)
 MTA_JINA_DETAIL_WORKERS = _env_int("MTA_JINA_DETAIL_WORKERS", 8)
 MTA_JINA_RETRIES = _env_int("MTA_JINA_RETRIES", 3)
@@ -114,9 +121,13 @@ def _clean_compensation_section(text: str) -> str:
 
 
 def _page_url(page: int) -> str:
+    return _listing_url(page, per_page=25)
+
+
+def _listing_url(page: int, per_page: int = JINA_PER_PAGE) -> str:
     if page == 1:
-        return SEARCH_URL
-    return f"{SEARCH_URL}/in?page={page}"
+        return f"{SEARCH_URL}/?per_page={per_page}"
+    return f"{SEARCH_URL}/?page={page}&per_page={per_page}"
 
 
 def _is_cloudflare_blocked(html: str) -> bool:
@@ -503,6 +514,12 @@ def _parse_search_page(html: str, agency: dict, normalize: bool = True) -> list[
 
 
 def _jina_url(url: str) -> str:
+    parsed = urlparse(url)
+    if parsed.scheme in {"http", "https"}:
+        target = f"{parsed.netloc}{parsed.path}"
+        if parsed.query:
+            target += f"?{parsed.query}"
+        return f"{JINA_READER_PREFIX}{target}"
     return f"{JINA_READER_PREFIX}{url}"
 
 
@@ -544,9 +561,7 @@ def _jina_text(url: str) -> str:
 
 
 def _jina_search_url(page: int) -> str:
-    if page == 1:
-        return f"{SEARCH_URL}?per_page={JINA_PER_PAGE}"
-    return f"{SEARCH_URL}/in?page={page}&per_page={JINA_PER_PAGE}"
+    return _listing_url(page, per_page=JINA_PER_PAGE)
 
 
 def _parse_jina_total_pages(text: str) -> int:
@@ -787,16 +802,19 @@ def _wait_for_mta_browser_page(page, url: str, selector: Optional[str] = None) -
 
     if selector:
         try:
-            page.wait_for_selector(selector, timeout=15_000)
+            page.wait_for_selector(selector, timeout=30_000)
         except Exception:
             pass
 
     html = page.content()
     if _is_cloudflare_blocked(html):
-        print("MTA returned a browser challenge. Complete it in the opened browser window.")
-        wait_selector = selector or "body"
-        page.wait_for_selector(wait_selector, timeout=120_000)
+        print("MTA returned a browser challenge; waiting for Chromium to complete verification.")
+        if not selector:
+            raise RuntimeError("MTA browser fallback stayed on a Cloudflare challenge page")
+        page.wait_for_selector(selector, timeout=120_000)
         html = page.content()
+        if _is_cloudflare_blocked(html):
+            raise RuntimeError("MTA browser fallback stayed on a Cloudflare challenge page")
 
     return html
 
@@ -812,16 +830,27 @@ def _scrape_mta_browser(agency: dict) -> list[dict]:
 
     summaries = []
     cached_jobs = _load_existing_mta_cache(agency)
+    is_ci = os.getenv("GITHUB_ACTIONS", "").lower() == "true" or os.getenv("CI", "").lower() == "true"
+    headless = _env_flag("MTA_BROWSER_HEADLESS", is_ci)
+    browser = None
 
     with sync_playwright() as p:
         try:
-            context = p.chromium.launch_persistent_context(
-                user_data_dir=str(BROWSER_PROFILE_DIR),
-                headless=False,
-                viewport={"width": 1440, "height": 1000},
-            )
+            if headless:
+                browser = p.chromium.launch(headless=True)
+                context = browser.new_context(
+                    viewport={"width": 1440, "height": 1000},
+                    user_agent=HEADERS["User-Agent"],
+                )
+            else:
+                context = p.chromium.launch_persistent_context(
+                    user_data_dir=str(BROWSER_PROFILE_DIR),
+                    headless=False,
+                    viewport={"width": 1440, "height": 1000},
+                    user_agent=HEADERS["User-Agent"],
+                )
         except PlaywrightError as exc:
-            if cached_jobs:
+            if cached_jobs and not is_ci:
                 print(f"MTA browser fallback unavailable; using {len(cached_jobs)} cached MTA jobs")
                 return _dedupe_jobs(list(cached_jobs.values()))
             raise RuntimeError(
@@ -830,36 +859,51 @@ def _scrape_mta_browser(agency: dict) -> list[dict]:
 
         page = context.new_page()
 
-        _wait_for_mta_browser_page(page, HOME_URL, "a[href^='/search/']")
-        search_urls = [SEARCH_URL]
+        for page_num in range(1, MAX_PAGES + 1):
+            html = _wait_for_mta_browser_page(page, _listing_url(page_num), JOB_LINK_SELECTOR)
+            page_summaries = _parse_search_page(html, agency, normalize=False)
+            if not page_summaries:
+                break
 
-        for search_url in search_urls:
-            for page_num in range(1, MAX_PAGES + 1):
-                page_url = search_url if page_num == 1 else f"{search_url}/in?page={page_num}"
-                html = _wait_for_mta_browser_page(page, page_url, JOB_LINK_SELECTOR)
-                page_summaries = _parse_search_page(html, agency, normalize=False)
-                if not page_summaries:
-                    break
-
-                summaries.extend(page_summaries)
-                time.sleep(0.5)
+            summaries.extend(page_summaries)
+            if len(page_summaries) < JINA_PER_PAGE:
+                break
+            time.sleep(0.5)
 
         summaries = _dedupe_jobs([_build_mta_job(summary, agency) for summary in summaries])
         summary_by_url = {job["source_url"]: job for job in summaries}
+        if not summary_by_url:
+            context.close()
+            if browser:
+                browser.close()
+            return _cached_mta_jobs_or_empty(
+                agency,
+                "MTA browser fallback returned no parseable listings",
+                cached_jobs,
+            )
+
+        print(f"MTA browser fallback discovered {len(summary_by_url)} live listings.")
         jobs = []
         skipped_details = 0
 
         for index, source_url in enumerate(summary_by_url, start=1):
             if source_url in cached_jobs:
-                jobs.append(cached_jobs[source_url])
+                summary_job = summary_by_url[source_url]
+                jobs.append(_build_mta_job(summary_job, agency, _cached_job_details(cached_jobs[source_url])))
                 skipped_details += 1
                 continue
 
             if index == 1 or index % 25 == 0:
                 print(f"Enriching MTA job details {index}/{len(summary_by_url)}")
 
-            detail_html = _wait_for_mta_browser_page(page, source_url, DETAIL_READY_SELECTOR)
-            details = _parse_detail_page(detail_html)
+            try:
+                detail_html = _wait_for_mta_browser_page(page, source_url, DETAIL_READY_SELECTOR)
+                details = _parse_detail_page(detail_html)
+            except Exception as exc:
+                print(f"Could not enrich MTA detail for {source_url}: {exc}")
+                jobs.append(summary_by_url[source_url])
+                continue
+
             summary = {
                 "title": summary_by_url[source_url]["title"],
                 "source_url": source_url,
@@ -875,6 +919,8 @@ def _scrape_mta_browser(agency: dict) -> list[dict]:
             print(f"Used cached MTA details for {skipped_details}/{len(summary_by_url)} jobs")
 
         context.close()
+        if browser:
+            browser.close()
 
     return _dedupe_jobs(jobs)
 
@@ -883,12 +929,18 @@ def scrape_mta(agency: dict) -> list[dict]:
     try:
         return _scrape_mta_requests(agency)
     except requests.RequestException as exc:
+        is_ci = os.getenv("GITHUB_ACTIONS", "").lower() == "true" or os.getenv("CI", "").lower() == "true"
         response = getattr(exc, "response", None)
-        if response is None or response.status_code != 403:
+        if not is_ci and (response is None or response.status_code != 403):
             raise
 
-        if os.getenv("GITHUB_ACTIONS", "").lower() == "true" or os.getenv("CI", "").lower() == "true":
-            return _scrape_mta_jina(agency)
+        if is_ci:
+            print("MTA blocked direct requests; trying headless browser fallback for CI.")
+            try:
+                return _scrape_mta_browser(agency)
+            except Exception as browser_exc:
+                print(f"MTA headless browser fallback failed: {browser_exc}; trying Jina listing fallback.")
+                return _scrape_mta_jina(agency)
 
         print("MTA blocked the requests scraper; trying local browser fallback.")
         return _scrape_mta_browser(agency)
