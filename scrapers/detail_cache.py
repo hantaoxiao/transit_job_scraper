@@ -6,7 +6,7 @@ from pathlib import Path
 from normalizer import clean_text
 
 
-CACHE_PATH = Path(os.getenv("SCRAPER_CACHE_PATH", "output/transit_jobs.csv"))
+DEFAULT_CACHE_PATH = Path("output/transit_jobs.csv")
 REFRESH_CACHED_DETAILS = os.getenv("SCRAPER_REFRESH_CACHED_DETAILS", "").lower() in {
     "1",
     "true",
@@ -36,19 +36,54 @@ KEEP_FIELDS = {
 }
 
 
+def _cache_paths() -> tuple[Path, ...]:
+    raw_paths = []
+    if os.getenv("SCRAPER_CACHE_PATHS"):
+        raw_paths.extend(path for path in os.getenv("SCRAPER_CACHE_PATHS", "").split(os.pathsep) if path)
+    if os.getenv("SCRAPER_CACHE_PATH"):
+        raw_paths.append(os.getenv("SCRAPER_CACHE_PATH", ""))
+    raw_paths.append(str(DEFAULT_CACHE_PATH))
+
+    paths = []
+    seen = set()
+    for raw_path in raw_paths:
+        path = Path(raw_path)
+        key = str(path)
+        if key in seen:
+            continue
+        seen.add(key)
+        paths.append(path)
+    return tuple(paths)
+
+
+def _cache_key(row: dict) -> tuple[str, str, str]:
+    return (
+        clean_text(row.get("agency")),
+        clean_text(row.get("source_url")),
+        clean_text(row.get("title")).lower(),
+    )
+
+
 @lru_cache(maxsize=1)
 def _cached_rows() -> tuple[dict, ...]:
-    if not DETAIL_CACHE_ENABLED or REFRESH_CACHED_DETAILS or not CACHE_PATH.exists():
+    if not DETAIL_CACHE_ENABLED or REFRESH_CACHED_DETAILS:
         return ()
 
-    try:
-        with CACHE_PATH.open(newline="", encoding="utf-8") as handle:
-            return tuple(
-                {key: value or "" for key, value in row.items() if key in KEEP_FIELDS}
-                for row in csv.DictReader(handle)
-            )
-    except OSError:
-        return ()
+    best_rows = {}
+    for path in _cache_paths():
+        if not path.exists():
+            continue
+        try:
+            with path.open(newline="", encoding="utf-8") as handle:
+                for row in csv.DictReader(handle):
+                    kept = {key: value or "" for key, value in row.items() if key in KEEP_FIELDS}
+                    key = _cache_key(kept)
+                    if key not in best_rows or _detail_score(kept) > _detail_score(best_rows[key]):
+                        best_rows[key] = kept
+        except OSError:
+            continue
+
+    return tuple(best_rows.values())
 
 
 @lru_cache(maxsize=None)

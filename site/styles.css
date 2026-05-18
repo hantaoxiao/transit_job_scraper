@@ -82,7 +82,7 @@ main {
 
 .toolbar {
   display: grid;
-  grid-template-columns: minmax(260px, 1.4fr) repeat(6, minmax(125px, 0.7fr)) minmax(260px, 1fr);
+  grid-template-columns: minmax(240px, 1.35fr) repeat(4, minmax(140px, 1fr));
   gap: 12px;
   align-items: end;
   padding: 14px;
@@ -90,6 +90,32 @@ main {
   border: 1px solid var(--line);
   border-radius: 8px;
   box-shadow: var(--shadow);
+}
+
+.search-field {
+  grid-column: span 2;
+}
+
+.clear-filters {
+  min-height: 42px;
+  padding: 0 14px;
+  color: var(--ink);
+  background: var(--soft);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  cursor: pointer;
+  font-weight: 850;
+  white-space: nowrap;
+}
+
+.clear-filters:hover {
+  background: #e4ece9;
+}
+
+.clear-filters:focus {
+  outline: none;
+  border-color: var(--green);
+  box-shadow: 0 0 0 3px rgba(31, 122, 91, 0.15);
 }
 
 .field {
@@ -555,7 +581,8 @@ main {
   }
 
   .search-field,
-  .salary-field {
+  .salary-field,
+  .clear-filters {
     grid-column: 1 / -1;
   }
 }
@@ -612,7 +639,8 @@ main {
   }
 
   .search-field,
-  .salary-field {
+  .salary-field,
+  .clear-filters {
     grid-column: auto;
   }
 

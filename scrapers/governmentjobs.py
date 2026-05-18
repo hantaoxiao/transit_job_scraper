@@ -26,10 +26,19 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
+def _env_float(name: str, default: float) -> float:
+    try:
+        return max(0.0, float(os.getenv(name, str(default))))
+    except ValueError:
+        return default
+
+
 DETAIL_WORKERS = _env_int("GOVJOBS_DETAIL_WORKERS", 4)
 REQUEST_RETRIES = _env_int("GOVJOBS_RETRIES", 2)
-CONNECT_TIMEOUT = _env_int("GOVJOBS_CONNECT_TIMEOUT", 5)
+CONNECT_TIMEOUT = _env_int("GOVJOBS_CONNECT_TIMEOUT", 10)
 READ_TIMEOUT = _env_int("GOVJOBS_READ_TIMEOUT", 30)
+REQUEST_DELAY = _env_float("GOVJOBS_REQUEST_DELAY", 0.0)
+AGENCY_DELAY = _env_float("GOVJOBS_AGENCY_DELAY", 0.0)
 FETCH_DETAILS = os.getenv("GOVJOBS_FETCH_DETAILS", "").lower() in {"1", "true", "yes"}
 
 
@@ -317,8 +326,12 @@ def scrape_governmentjobs(agency: dict) -> list[dict]:
 
         if new_jobs == 0 or len(links) < 10:
             break
+        if REQUEST_DELAY:
+            time.sleep(REQUEST_DELAY)
 
     if not candidates:
+        if AGENCY_DELAY:
+            time.sleep(AGENCY_DELAY)
         return []
 
     details_by_url = {}
@@ -381,4 +394,6 @@ def scrape_governmentjobs(agency: dict) -> list[dict]:
             )
         )
 
+    if AGENCY_DELAY:
+        time.sleep(AGENCY_DELAY)
     return jobs

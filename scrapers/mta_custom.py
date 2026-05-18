@@ -53,7 +53,7 @@ DETAIL_LABELS = (
     "Metro-North Closing Date",
 )
 
-CACHE_PATH = Path("output/transit_jobs.csv")
+DEFAULT_CACHE_PATH = Path("output/transit_jobs.csv")
 CACHE_BOOL_FIELDS = {
     "salary_is_listed",
     "salary_is_comparable",
@@ -153,6 +153,44 @@ def _coerce_cached_job(row: dict) -> dict:
     return job
 
 
+def _mta_cache_paths() -> tuple[Path, ...]:
+    raw_paths = []
+    if os.getenv("SCRAPER_CACHE_PATHS"):
+        raw_paths.extend(path for path in os.getenv("SCRAPER_CACHE_PATHS", "").split(os.pathsep) if path)
+    if os.getenv("SCRAPER_CACHE_PATH"):
+        raw_paths.append(os.getenv("SCRAPER_CACHE_PATH", ""))
+    raw_paths.append(str(DEFAULT_CACHE_PATH))
+
+    paths = []
+    seen = set()
+    for raw_path in raw_paths:
+        path = Path(raw_path)
+        key = str(path)
+        if key in seen:
+            continue
+        seen.add(key)
+        paths.append(path)
+    return tuple(paths)
+
+
+def _cached_mta_job_score(job: dict) -> int:
+    return sum(
+        1
+        for field in (
+            "salary_text",
+            "salary_is_listed",
+            "description",
+            "full_job_description",
+            "all_meaningful_info",
+            "raw_context",
+            "posted_date",
+            "closing_date",
+            "mta_job_id",
+        )
+        if job.get(field)
+    )
+
+
 def _annual_salary_estimate(parsed_salary: dict) -> float:
     for field in ("salary_annual_max_est", "salary_max"):
         value = parsed_salary.get(field)
@@ -218,16 +256,22 @@ def _cached_job_details(job: dict) -> dict:
 
 
 def _load_existing_mta_cache(agency: dict) -> dict[str, dict]:
-    if not CACHE_PATH.exists():
-        return {}
-
-    with CACHE_PATH.open(newline="", encoding="utf-8") as handle:
-        rows = csv.DictReader(handle)
-        return {
-            row["source_url"]: _coerce_cached_job(row)
-            for row in rows
-            if row.get("agency") == agency["agency"] and row.get("source_url")
-        }
+    cached_jobs = {}
+    for path in _mta_cache_paths():
+        if not path.exists():
+            continue
+        try:
+            with path.open(newline="", encoding="utf-8") as handle:
+                for row in csv.DictReader(handle):
+                    if row.get("agency") != agency["agency"] or not row.get("source_url"):
+                        continue
+                    job = _coerce_cached_job(row)
+                    source_url = row["source_url"]
+                    if source_url not in cached_jobs or _cached_mta_job_score(job) > _cached_mta_job_score(cached_jobs[source_url]):
+                        cached_jobs[source_url] = job
+        except OSError:
+            continue
+    return cached_jobs
 
 
 def _discover_search_urls(session: requests.Session) -> list[str]:
@@ -657,7 +701,7 @@ def _scrape_mta_jina(agency: dict) -> list[dict]:
         )
     if failed_pages:
         pages = ", ".join(str(page) for page in sorted(failed_pages))
-        print(f"MTA Jina listing fallback could not read pages {pages}; continuing with partial live results.")
+        raise RuntimeError(f"MTA Jina listing fallback could not read pages {pages} and no MTA cache was available")
 
     deduped_summaries = []
     seen_urls = set()

@@ -15,6 +15,7 @@
     salaryRange: document.getElementById("salaryRange"),
     salaryOutput: document.getElementById("salaryOutput"),
     includeUnknownSalary: document.getElementById("includeUnknownSalary"),
+    clearFiltersButton: document.getElementById("clearFiltersButton"),
     resultCount: document.getElementById("resultCount"),
     pageSizeSelect: document.getElementById("pageSizeSelect"),
     pagination: document.getElementById("pagination"),
@@ -26,6 +27,7 @@
 
   let currentView = "list";
   let currentPage = 1;
+  const DEFAULT_SORT = "posted_desc";
 
   const agencyMeta = {
     "AC Transit": { short: "AC", name: "AC Transit", color: "#0f6b50", location: "Oakland, CA", logo: "assets/agency-logos/ac-transit.png" },
@@ -247,17 +249,25 @@
     return Number.isNaN(date.getTime()) ? 0 : date.getTime();
   }
 
-  function uniqueSorted(field) {
-    return [...new Set(jobs.map((job) => job[field]).filter(Boolean))].sort((a, b) => a.localeCompare(b));
-  }
+  function replaceOptions(select, values, allLabel, counts = new Map()) {
+    const previousValue = select.value;
+    select.replaceChildren();
 
-  function optionize(select, values) {
+    const allOption = document.createElement("option");
+    allOption.value = "";
+    allOption.textContent = allLabel;
+    select.appendChild(allOption);
+
     values.forEach((value) => {
       const option = document.createElement("option");
       option.value = value;
-      option.textContent = value;
+      const count = counts.get(value);
+      option.textContent = Number.isFinite(count) ? `${value} (${count.toLocaleString()})` : value;
       select.appendChild(option);
     });
+
+    select.value = values.includes(previousValue) ? previousValue : "";
+    return previousValue !== select.value;
   }
 
   function formatDate(value) {
@@ -477,31 +487,87 @@
     );
   }
 
-  function filterJobs() {
+  function selectedFilters() {
     const query = els.searchInput.value.trim().toLowerCase();
-    const agency = els.agencyFilter.value;
-    const state = els.stateFilter.value;
-    const category = els.categoryFilter.value;
-    const seniority = els.seniorityFilter.value;
-    const employmentType = els.employmentTypeFilter.value;
-    const minSalary = Number(els.salaryRange.value);
-    const includeUnknown = els.includeUnknownSalary.checked;
+    return {
+      query,
+      agency: els.agencyFilter.value,
+      state: els.stateFilter.value,
+      category: els.categoryFilter.value,
+      seniority: els.seniorityFilter.value,
+      employmentType: els.employmentTypeFilter.value,
+      minSalary: Number(els.salaryRange.value),
+      includeUnknown: els.includeUnknownSalary.checked,
+    };
+  }
 
-    return jobs.filter((job) => {
-      return (
-        (!query || matchesSearch(job, query)) &&
-        (!agency || job.agency === agency) &&
-        (!state || job.state === state) &&
-        (!category || job.category === category) &&
-        (!seniority || job.ai_sort_seniority === seniority) &&
-        (!employmentType || employmentTypeBucket(job) === employmentType) &&
-        passesSalary(job, minSalary, includeUnknown)
-      );
+  function matchesFilters(job, filters, excluded = new Set()) {
+    return (
+      (excluded.has("query") || !filters.query || matchesSearch(job, filters.query)) &&
+      (excluded.has("agency") || !filters.agency || job.agency === filters.agency) &&
+      (excluded.has("state") || !filters.state || job.state === filters.state) &&
+      (excluded.has("category") || !filters.category || job.category === filters.category) &&
+      (excluded.has("seniority") || !filters.seniority || job.ai_sort_seniority === filters.seniority) &&
+      (excluded.has("employmentType") || !filters.employmentType || employmentTypeBucket(job) === filters.employmentType) &&
+      (excluded.has("salary") || passesSalary(job, filters.minSalary, filters.includeUnknown))
+    );
+  }
+
+  function filterJobs() {
+    const filters = selectedFilters();
+    return jobs.filter((job) => matchesFilters(job, filters));
+  }
+
+  function optionValuesFor(key, valueForJob) {
+    const filters = selectedFilters();
+    const excluded = new Set([key, "query", "salary"]);
+    const counts = new Map();
+
+    jobs.forEach((job) => {
+      if (!matchesFilters(job, filters, excluded)) return;
+      const value = valueForJob(job);
+      if (!value) return;
+      counts.set(value, (counts.get(value) || 0) + 1);
     });
+
+    const values = [...counts.keys()].sort((a, b) => a.localeCompare(b));
+    return { values, counts };
+  }
+
+  function refreshFilterOptions() {
+    let changed = false;
+
+    const agencyOptions = optionValuesFor("agency", (job) => job.agency);
+    changed = replaceOptions(els.agencyFilter, agencyOptions.values, "All agencies", agencyOptions.counts) || changed;
+
+    const stateOptions = optionValuesFor("state", (job) => job.state);
+    changed = replaceOptions(els.stateFilter, stateOptions.values, "All states", stateOptions.counts) || changed;
+
+    const categoryOptions = optionValuesFor("category", (job) => job.category);
+    changed = replaceOptions(els.categoryFilter, categoryOptions.values, "All categories", categoryOptions.counts) || changed;
+
+    const seniorityOptions = optionValuesFor("seniority", (job) => job.ai_sort_seniority);
+    changed = replaceOptions(els.seniorityFilter, seniorityOptions.values, "All levels", seniorityOptions.counts) || changed;
+
+    return changed;
+  }
+
+  function resetFilters() {
+    els.searchInput.value = "";
+    els.agencyFilter.value = "";
+    els.stateFilter.value = "";
+    els.categoryFilter.value = "";
+    els.seniorityFilter.value = "";
+    els.employmentTypeFilter.value = "";
+    els.sortSelect.value = DEFAULT_SORT;
+    els.salaryRange.value = "0";
+    els.includeUnknownSalary.checked = true;
+    updateSalaryOutput();
+    refreshFilterOptions();
   }
 
   function sortJobs(items) {
-    const sort = els.sortSelect.value;
+    const sort = els.sortSelect.value || DEFAULT_SORT;
     const query = els.searchInput.value.trim().toLowerCase();
     const sorted = [...items];
     const textCompare = (a, b, field) => String(a[field] || "").localeCompare(String(b[field] || ""));
@@ -601,6 +667,10 @@
     currentPage = 1;
   }
 
+  function updateSalaryOutput() {
+    els.salaryOutput.textContent = Number(els.salaryRange.value) ? money.format(Number(els.salaryRange.value)) : "Any";
+  }
+
   function scrollToResults() {
     document.querySelector(".results").scrollIntoView({ behavior: "smooth", block: "start" });
   }
@@ -681,8 +751,10 @@
     els.mapView.querySelectorAll(".map-marker").forEach((marker) => {
       marker.addEventListener("click", () => {
         els.agencyFilter.value = marker.dataset.agency;
+        els.sortSelect.value = DEFAULT_SORT;
         currentView = "list";
         resetPage();
+        refreshFilterOptions();
         renderJobs();
       });
     });
@@ -825,24 +897,45 @@
   }
 
   function bind() {
-    const inputs = [
+    const filterInputs = [
       els.searchInput,
-      els.agencyFilter,
       els.stateFilter,
       els.categoryFilter,
       els.seniorityFilter,
       els.employmentTypeFilter,
-      els.sortSelect,
       els.salaryRange,
       els.includeUnknownSalary,
-      els.pageSizeSelect,
     ];
 
-    inputs.forEach((input) => input.addEventListener("input", () => {
-      els.salaryOutput.textContent = Number(els.salaryRange.value) ? money.format(Number(els.salaryRange.value)) : "Any";
+    filterInputs.forEach((input) => input.addEventListener("input", () => {
+      updateSalaryOutput();
+      refreshFilterOptions();
       resetPage();
       renderJobs();
     }));
+
+    els.agencyFilter.addEventListener("input", () => {
+      els.sortSelect.value = DEFAULT_SORT;
+      refreshFilterOptions();
+      resetPage();
+      renderJobs();
+    });
+
+    els.sortSelect.addEventListener("input", () => {
+      resetPage();
+      renderJobs();
+    });
+
+    els.pageSizeSelect.addEventListener("input", () => {
+      resetPage();
+      renderJobs();
+    });
+
+    els.clearFiltersButton.addEventListener("click", () => {
+      resetFilters();
+      resetPage();
+      renderJobs();
+    });
 
     els.listViewButton.addEventListener("click", () => {
       currentView = "list";
@@ -855,10 +948,7 @@
     });
   }
 
-  optionize(els.agencyFilter, uniqueSorted("agency"));
-  optionize(els.stateFilter, uniqueSorted("state"));
-  optionize(els.categoryFilter, uniqueSorted("category"));
-  optionize(els.seniorityFilter, uniqueSorted("ai_sort_seniority"));
+  refreshFilterOptions();
   setHeader();
   renderJobs();
   bind();

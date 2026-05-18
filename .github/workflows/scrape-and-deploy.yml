@@ -28,11 +28,19 @@ jobs:
       PYTHONUNBUFFERED: "1"
       PYTHONDONTWRITEBYTECODE: "1"
       SCRAPER_WORKERS: "6"
-      GOVJOBS_AGENCY_WORKERS: "2"
-      GOVJOBS_RETRIES: "2"
+      SCRAPER_CACHE_PATH: ".scraper-cache/transit_jobs.csv"
+      SCRAPER_CACHE_PATHS: ".scraper-cache/transit_jobs.csv:output/transit_jobs.csv"
+      GOVJOBS_AGENCY_WORKERS: "1"
+      GOVJOBS_RETRIES: "3"
+      GOVJOBS_CONNECT_TIMEOUT: "12"
+      GOVJOBS_REQUEST_DELAY: "0.4"
+      GOVJOBS_AGENCY_DELAY: "0.8"
       SCRAPER_MIN_TOTAL_JOBS: "100"
       SCRAPER_MIN_TOTAL_RATIO: "0.50"
       SCRAPER_ZERO_AGENCY_CACHE_MIN: "10"
+      SCRAPER_FAILED_AGENCY_CACHE_MIN: "1"
+      SCRAPER_PARTIAL_CACHE_AGENCIES: "MTA"
+      SCRAPER_AGENCY_MIN_TOTAL_RATIO: "0.75"
       SCRAPER_PRESERVE_AGENCY_CACHE_ON_ZERO: "1"
       MTA_JINA_LIST_WORKERS: "4"
       MTA_JINA_DETAIL_WORKERS: "8"
@@ -67,7 +75,7 @@ jobs:
       - name: Restore previous scrape cache
         uses: actions/cache/restore@v4
         with:
-          path: output/transit_jobs.csv
+          path: .scraper-cache/transit_jobs.csv
           key: transit-jobs-output-${{ github.run_id }}
           restore-keys: |
             transit-jobs-output-
@@ -75,11 +83,15 @@ jobs:
       - name: Scrape jobs and build static data
         run: python main.py
 
+      - name: Refresh scrape cache file
+        if: always()
+        run: mkdir -p .scraper-cache && { [ ! -f output/transit_jobs.csv ] || cp output/transit_jobs.csv .scraper-cache/transit_jobs.csv; }
+
       - name: Save scrape cache
         if: always()
         uses: actions/cache/save@v4
         with:
-          path: output/transit_jobs.csv
+          path: .scraper-cache/transit_jobs.csv
           key: transit-jobs-output-${{ github.run_id }}
 
       - name: Upload CSV artifact

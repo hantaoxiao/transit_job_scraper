@@ -129,6 +129,8 @@ DEFAULT_GOVJOBS_AGENCY_WORKERS = _env_int("GOVJOBS_AGENCY_WORKERS", 2)
 DEFAULT_RISKY_SCRAPER_TIMEOUT = _env_int("RISKY_SCRAPER_TIMEOUT", 180)
 MIN_TOTAL_JOBS = _env_int("SCRAPER_MIN_TOTAL_JOBS", 100)
 ZERO_AGENCY_CACHE_MIN = _env_int("SCRAPER_ZERO_AGENCY_CACHE_MIN", 10)
+FAILED_AGENCY_CACHE_MIN = _env_int("SCRAPER_FAILED_AGENCY_CACHE_MIN", 1)
+PARTIAL_AGENCY_CACHE_MIN = _env_int("SCRAPER_PARTIAL_AGENCY_CACHE_MIN", 50)
 SERIAL_PLATFORMS = {"mta_custom"}
 RISKY_PLATFORM_TIMEOUTS = {
     "mta_custom": 300,
@@ -138,6 +140,7 @@ RISKY_PLATFORM_TIMEOUTS = {
     "adp": 60,
     "dayforce": 45,
 }
+LAST_SCRAPE_RESULTS = []
 
 
 def _env_float(name: str, default: float) -> float:
@@ -158,14 +161,171 @@ def _truthy_count(series: pd.Series) -> int:
     return int(series.fillna(False).astype(str).str.lower().isin({"true", "1", "yes"}).sum())
 
 
-def _load_previous_output(output_path: Path) -> pd.DataFrame:
-    if not output_path.exists():
-        return pd.DataFrame()
+def _has_cache_value(value) -> bool:
+    if value is None:
+        return False
     try:
-        return pd.read_csv(output_path).fillna("")
-    except (OSError, pd.errors.EmptyDataError, pd.errors.ParserError) as exc:
-        print(f"Could not read previous scrape cache from {output_path}: {exc}", flush=True)
+        if pd.isna(value):
+            return False
+    except (TypeError, ValueError):
+        pass
+    return str(value).strip().lower() not in {"", "false", "0", "none", "nan"}
+
+
+def _previous_output_paths(output_path: Path) -> list[Path]:
+    raw_paths = []
+    if os.getenv("SCRAPER_CACHE_PATHS"):
+        raw_paths.extend(path for path in os.getenv("SCRAPER_CACHE_PATHS", "").split(os.pathsep) if path)
+    if os.getenv("SCRAPER_CACHE_PATH"):
+        raw_paths.append(os.getenv("SCRAPER_CACHE_PATH", ""))
+    raw_paths.append(str(output_path))
+
+    paths = []
+    seen = set()
+    for raw_path in raw_paths:
+        path = Path(raw_path)
+        key = str(path)
+        if key in seen:
+            continue
+        seen.add(key)
+        paths.append(path)
+    return paths
+
+
+def _previous_row_score(row: pd.Series) -> int:
+    return sum(
+        _has_cache_value(row.get(field))
+        for field in (
+            "salary_text",
+            "salary_is_listed",
+            "description",
+            "full_job_description",
+            "all_meaningful_info",
+            "raw_context",
+            "posted_date",
+            "closing_date",
+        )
+    )
+
+
+def _dedupe_jobs_by_quality(df: pd.DataFrame) -> pd.DataFrame:
+    if df.empty or "job_id" not in df.columns:
+        return df
+
+    working = df.copy()
+    working["_row_order"] = range(len(working))
+    working["_row_quality_score"] = working.apply(_previous_row_score, axis=1)
+    return (
+        working.sort_values(
+            ["job_id", "_row_quality_score", "_row_order"],
+            ascending=[True, False, True],
+        )
+        .drop_duplicates(subset=["job_id"])
+        .sort_values("_row_order")
+        .drop(columns=["_row_order", "_row_quality_score"])
+        .reset_index(drop=True)
+    )
+
+
+def _load_previous_output(output_path: Path) -> pd.DataFrame:
+    frames = []
+    for path in _previous_output_paths(output_path):
+        if not path.exists():
+            continue
+        try:
+            frames.append(pd.read_csv(path).fillna(""))
+        except (OSError, pd.errors.EmptyDataError, pd.errors.ParserError) as exc:
+            print(f"Could not read previous scrape cache from {path}: {exc}", flush=True)
+
+    if not frames:
         return pd.DataFrame()
+
+    previous_df = pd.concat(frames, ignore_index=True, sort=False)
+    if "job_id" in previous_df.columns:
+        previous_df["_cache_score"] = previous_df.apply(_previous_row_score, axis=1)
+        previous_df = (
+            previous_df.sort_values("_cache_score", ascending=False)
+            .drop_duplicates(subset=["job_id"])
+            .drop(columns=["_cache_score"])
+            .reset_index(drop=True)
+        )
+    return previous_df.fillna("")
+
+
+def _cached_agency_rows(previous_df: pd.DataFrame, agency_names: list[str]) -> pd.DataFrame:
+    if previous_df.empty or "agency" not in previous_df.columns or not agency_names:
+        return pd.DataFrame()
+    return previous_df[previous_df["agency"].isin(agency_names)]
+
+
+def _preserve_failed_agency_cache(
+    df: pd.DataFrame,
+    previous_df: pd.DataFrame,
+    scrape_results: list[dict],
+) -> pd.DataFrame:
+    if df.empty or previous_df.empty or "agency" not in previous_df.columns:
+        return df
+
+    current_counts = df["agency"].value_counts() if "agency" in df.columns else pd.Series(dtype=int)
+    previous_counts = previous_df["agency"].value_counts()
+    failed_cache_min = _env_int("SCRAPER_FAILED_AGENCY_CACHE_MIN", FAILED_AGENCY_CACHE_MIN)
+    failed_agencies = [
+        result["agency"]
+        for result in scrape_results
+        if result.get("error")
+        and previous_counts.get(result["agency"], 0) >= failed_cache_min
+        and current_counts.get(result["agency"], 0) == 0
+    ]
+    failed_agencies = sorted(set(failed_agencies))
+    if not failed_agencies:
+        return df
+
+    preserved = _cached_agency_rows(previous_df, failed_agencies)
+    print(
+        "Preserving cached rows for agencies that errored during this run: "
+        + ", ".join(f"{agency} ({int(previous_counts[agency])})" for agency in failed_agencies),
+        flush=True,
+    )
+    return pd.concat([df, preserved], ignore_index=True, sort=False)
+
+
+def _partial_cache_agencies() -> set[str]:
+    raw = os.getenv("SCRAPER_PARTIAL_CACHE_AGENCIES", "MTA")
+    return {agency.strip() for agency in raw.split(",") if agency.strip()}
+
+
+def _preserve_partial_agency_cache(df: pd.DataFrame, previous_df: pd.DataFrame) -> pd.DataFrame:
+    if df.empty or previous_df.empty or "agency" not in previous_df.columns or "agency" not in df.columns:
+        return df
+
+    agencies = _partial_cache_agencies()
+    if not agencies:
+        return df
+
+    current_counts = df["agency"].value_counts()
+    previous_counts = previous_df["agency"].value_counts()
+    min_ratio = _env_float("SCRAPER_AGENCY_MIN_TOTAL_RATIO", 0.75)
+    partial_cache_min = _env_int("SCRAPER_PARTIAL_AGENCY_CACHE_MIN", PARTIAL_AGENCY_CACHE_MIN)
+    agencies_to_preserve = [
+        agency
+        for agency in agencies
+        if previous_counts.get(agency, 0) >= partial_cache_min
+        and 0 < current_counts.get(agency, 0) < previous_counts[agency] * min_ratio
+    ]
+
+    if not agencies_to_preserve:
+        return df
+
+    preserved = _cached_agency_rows(previous_df, agencies_to_preserve)
+    print(
+        "Preserving cached rows for agencies with suspiciously low partial results: "
+        + ", ".join(
+            f"{agency} ({int(current_counts.get(agency, 0))}/{int(previous_counts[agency])})"
+            for agency in agencies_to_preserve
+        ),
+        flush=True,
+    )
+    return pd.concat([df, preserved], ignore_index=True, sort=False)
 
 
 def _preserve_zero_count_agency_cache(df: pd.DataFrame, previous_df: pd.DataFrame) -> pd.DataFrame:
@@ -409,16 +569,24 @@ def _print_scrape_result(result: dict) -> None:
     print(f"Found {len(result['jobs'])} jobs for {agency} ({platform}) in {elapsed:.1f}s", flush=True)
 
 
+def _record_scrape_result(result: dict, all_jobs: list[dict], scrape_results: list[dict]) -> None:
+    scrape_results.append(result)
+    all_jobs.extend(result["jobs"])
+    _print_scrape_result(result)
+
+
 def run_all_scrapers() -> list[dict]:
+    global LAST_SCRAPE_RESULTS
     all_jobs = []
+    scrape_results = []
     force_sequential = os.getenv("SCRAPER_MODE", "").lower() == "sequential"
 
     if force_sequential:
         print(f"Scraping {len(AGENCIES)} agencies sequentially", flush=True)
         for agency in AGENCIES:
             result = _scrape_agency(agency)
-            all_jobs.extend(result["jobs"])
-            _print_scrape_result(result)
+            _record_scrape_result(result, all_jobs, scrape_results)
+        LAST_SCRAPE_RESULTS = scrape_results
         return all_jobs
 
     governmentjobs_agencies = [agency for agency in AGENCIES if agency["platform"] == "governmentjobs"]
@@ -441,8 +609,7 @@ def run_all_scrapers() -> list[dict]:
             futures = {executor.submit(_scrape_agency, agency): agency for agency in parallel_agencies}
             for future in as_completed(futures):
                 result = future.result()
-                all_jobs.extend(result["jobs"])
-                _print_scrape_result(result)
+                _record_scrape_result(result, all_jobs, scrape_results)
 
     if governmentjobs_agencies and not force_sequential:
         workers = min(DEFAULT_GOVJOBS_AGENCY_WORKERS, len(governmentjobs_agencies))
@@ -451,15 +618,13 @@ def run_all_scrapers() -> list[dict]:
             futures = {executor.submit(_scrape_agency, agency): agency for agency in governmentjobs_agencies}
             for future in as_completed(futures):
                 result = future.result()
-                all_jobs.extend(result["jobs"])
-                _print_scrape_result(result)
+                _record_scrape_result(result, all_jobs, scrape_results)
 
     if serial_agencies:
         print(f"Scraping {len(serial_agencies)} serial browser/custom agencies in isolated workers", flush=True)
         for agency in serial_agencies:
             result = _scrape_agency_isolated(agency)
-            all_jobs.extend(result["jobs"])
-            _print_scrape_result(result)
+            _record_scrape_result(result, all_jobs, scrape_results)
 
     if browser_agencies:
         print(
@@ -468,9 +633,9 @@ def run_all_scrapers() -> list[dict]:
         )
         for agency in browser_agencies:
             result = _scrape_agency_isolated(agency)
-            all_jobs.extend(result["jobs"])
-            _print_scrape_result(result)
+            _record_scrape_result(result, all_jobs, scrape_results)
 
+    LAST_SCRAPE_RESULTS = scrape_results
     return all_jobs
 
 
@@ -486,9 +651,11 @@ if __name__ == "__main__":
     if df.empty:
         print("\nNo jobs were collected. Some sites may block scraping or require custom parsers.")
 
+    df = _preserve_failed_agency_cache(df, previous_df, LAST_SCRAPE_RESULTS)
     df = _preserve_zero_count_agency_cache(df, previous_df)
+    df = _preserve_partial_agency_cache(df, previous_df)
     if not df.empty:
-        df = df.drop_duplicates(subset=["job_id"])
+        df = _dedupe_jobs_by_quality(df)
         sort_cols = [
             col
             for col in ["agency", "ai_sort_category", "ai_sort_seniority", "category", "title"]
