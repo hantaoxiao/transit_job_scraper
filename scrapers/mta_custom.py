@@ -10,7 +10,7 @@ from urllib.parse import urljoin, urlparse
 import requests
 from bs4 import BeautifulSoup
 
-from normalizer import clean_text, normalize_job, repair_split_money
+from normalizer import clean_text, extract_salary, normalize_job, parse_salary, repair_split_money
 
 
 HEADERS = {
@@ -99,6 +99,20 @@ def _extract_labeled_section(text: str, label: str) -> str:
     return clean_text(match.group(1)) if match else ""
 
 
+def _clean_compensation_section(text: str) -> str:
+    text = repair_split_money(text)
+    for heading in (
+        "Responsibilities",
+        "Education and Experience",
+        "Desired Skills",
+        "Selection Method",
+        "Other Information",
+        "Equal Employment Opportunity",
+    ):
+        text = re.split(rf"\s+\b{re.escape(heading)}\b(?:\s*:)?", text, maxsplit=1, flags=re.IGNORECASE)[0]
+    return clean_text(text)
+
+
 def _page_url(page: int) -> str:
     if page == 1:
         return SEARCH_URL
@@ -139,6 +153,45 @@ def _coerce_cached_job(row: dict) -> dict:
     return job
 
 
+def _annual_salary_estimate(parsed_salary: dict) -> float:
+    for field in ("salary_annual_max_est", "salary_max"):
+        value = parsed_salary.get(field)
+        if value == "":
+            continue
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            continue
+    return 0.0
+
+
+def _repair_cached_salary_text(details: dict) -> None:
+    salary_text = details.get("salary_text", "")
+    repaired_salary_text = _clean_compensation_section(salary_text)
+    if repaired_salary_text != clean_text(salary_text):
+        details["salary_text"] = repaired_salary_text
+        salary_text = repaired_salary_text
+
+    context = details.get("all_meaningful_info") or details.get("full_job_description") or ""
+    extracted = extract_salary(context)
+    if not extracted:
+        return
+
+    current_salary = parse_salary(salary_text)
+    extracted_salary = parse_salary(extracted)
+    if not extracted_salary.get("salary_is_comparable"):
+        return
+
+    current_estimate = _annual_salary_estimate(current_salary)
+    extracted_estimate = _annual_salary_estimate(extracted_salary)
+    if (
+        not current_salary.get("salary_is_comparable")
+        or current_estimate < 30000
+        or extracted_estimate > current_estimate * 2
+    ):
+        details["salary_text"] = extracted
+
+
 def _cached_job_details(job: dict) -> dict:
     detail_keys = [
         "all_meaningful_info",
@@ -160,6 +213,7 @@ def _cached_job_details(job: dict) -> dict:
         details["full_job_description"] = job["description"]
     if job.get("raw_context") and not details.get("all_meaningful_info"):
         details["all_meaningful_info"] = job["raw_context"]
+    _repair_cached_salary_text(details)
     return details
 
 
@@ -324,7 +378,7 @@ def _parse_detail_page(html: str) -> dict:
 
     salary_text = _extract_labeled_section(meaningful_text, "Salary Range")
     if salary_text:
-        details["salary_text"] = repair_split_money(salary_text)
+        details["salary_text"] = _clean_compensation_section(salary_text)
 
     if "Description" in lines:
         details["full_job_description"] = "\n".join(lines[lines.index("Description") + 1 :])
@@ -408,6 +462,22 @@ def _jina_url(url: str) -> str:
     return f"{JINA_READER_PREFIX}{url}"
 
 
+def _is_jina_unusable_text(text: str) -> bool:
+    normalized = clean_text(text).lower()
+    if not normalized:
+        return True
+    return any(
+        marker in normalized
+        for marker in [
+            "enable javascript and cookies to continue",
+            "just a moment",
+            "target url returned error 403",
+            "checking if the site connection is secure",
+            "verify you are human",
+        ]
+    )
+
+
 def _jina_text(url: str) -> str:
     last_error = None
     for attempt in range(MTA_JINA_RETRIES):
@@ -415,8 +485,12 @@ def _jina_text(url: str) -> str:
             response = requests.get(_jina_url(url), headers=HEADERS, timeout=90)
             response.raise_for_status()
             if "Markdown Content:" in response.text:
-                return response.text.split("Markdown Content:", 1)[1]
-            return response.text
+                text = response.text.split("Markdown Content:", 1)[1]
+            else:
+                text = response.text
+            if _is_jina_unusable_text(text):
+                raise requests.HTTPError("MTA Jina fallback returned a challenge page", response=response)
+            return text
         except requests.RequestException as exc:
             last_error = exc
             if attempt == MTA_JINA_RETRIES - 1:
@@ -508,7 +582,7 @@ def _parse_jina_detail_page(markdown: str) -> dict:
         or _extract_labeled_section(meaningful_text, "Salary")
     )
     if compensation:
-        details["salary_text"] = repair_split_money(compensation)
+        details["salary_text"] = _clean_compensation_section(compensation)
 
     closing_date = (
         _extract_labeled_value(meaningful_text, "Deadline (if Applicable)")
@@ -527,17 +601,63 @@ def _fetch_jina_detail(source_url: str) -> dict:
         return {}
 
 
+def _cached_mta_jobs_or_empty(agency: dict, reason: str, cached_jobs: Optional[dict[str, dict]] = None) -> list[dict]:
+    cached_jobs = cached_jobs if cached_jobs is not None else _load_existing_mta_cache(agency)
+    if cached_jobs:
+        print(f"{reason}; using {len(cached_jobs)} cached MTA jobs instead.")
+        return _dedupe_jobs(list(cached_jobs.values()))
+
+    print(f"{reason}; no cached MTA jobs available.")
+    return []
+
+
 def _scrape_mta_jina(agency: dict) -> list[dict]:
     print("MTA blocked direct requests; using live text-rendered MTA listing fallback.")
-    first_page = _jina_text(_jina_search_url(1))
-    summaries = _parse_jina_search_page(first_page, agency, normalize=False)
-    total_pages = _parse_jina_total_pages(first_page)
+    cached_jobs = _load_existing_mta_cache(agency)
 
-    if total_pages > 1:
+    try:
+        first_page = _jina_text(_jina_search_url(1))
+    except requests.RequestException:
+        return _cached_mta_jobs_or_empty(agency, "MTA Jina listing fallback was blocked", cached_jobs)
+
+    summaries = _parse_jina_search_page(first_page, agency, normalize=False)
+    if not summaries:
+        return _cached_mta_jobs_or_empty(agency, "MTA Jina listing fallback returned no parseable jobs", cached_jobs)
+
+    total_pages = _parse_jina_total_pages(first_page)
+    failed_pages = []
+    merge_cached_remainder = bool(cached_jobs and total_pages > 1)
+
+    if merge_cached_remainder:
+        print(
+            f"MTA Jina fallback read {len(summaries)} listings from the first per_page={JINA_PER_PAGE} page; "
+            "merging with cached MTA jobs instead of fetching later pages."
+        )
+    elif total_pages > 1:
         with ThreadPoolExecutor(max_workers=min(MTA_JINA_LIST_WORKERS, total_pages - 1)) as executor:
             futures = {executor.submit(_jina_text, _jina_search_url(page)): page for page in range(2, total_pages + 1)}
             for future in as_completed(futures):
-                summaries.extend(_parse_jina_search_page(future.result(), agency, normalize=False))
+                page = futures[future]
+                try:
+                    page_summaries = _parse_jina_search_page(future.result(), agency, normalize=False)
+                except requests.RequestException:
+                    failed_pages.append(page)
+                    continue
+                if not page_summaries:
+                    failed_pages.append(page)
+                    continue
+                summaries.extend(page_summaries)
+
+    if failed_pages and cached_jobs:
+        pages = ", ".join(str(page) for page in sorted(failed_pages))
+        return _cached_mta_jobs_or_empty(
+            agency,
+            f"MTA Jina listing fallback could not read all result pages ({pages})",
+            cached_jobs,
+        )
+    if failed_pages:
+        pages = ", ".join(str(page) for page in sorted(failed_pages))
+        print(f"MTA Jina listing fallback could not read pages {pages}; continuing with partial live results.")
 
     deduped_summaries = []
     seen_urls = set()
@@ -549,7 +669,6 @@ def _scrape_mta_jina(agency: dict) -> list[dict]:
         deduped_summaries.append(summary)
 
     summary_by_url = {summary["source_url"]: summary for summary in deduped_summaries}
-    cached_jobs = _load_existing_mta_cache(agency)
     new_urls = [source_url for source_url in summary_by_url if source_url not in cached_jobs]
     details_by_url = {}
 
@@ -571,8 +690,18 @@ def _scrape_mta_jina(agency: dict) -> list[dict]:
         else:
             jobs.append(_build_mta_job(summary, agency))
 
+    preserved_cached = 0
+    if merge_cached_remainder:
+        for source_url, cached_job in cached_jobs.items():
+            if source_url in summary_by_url:
+                continue
+            jobs.append(cached_job)
+            preserved_cached += 1
+
     if reused_details:
         print(f"Reused cached MTA details for {reused_details}/{len(summary_by_url)} currently listed jobs.")
+    if preserved_cached:
+        print(f"Preserved {preserved_cached} cached MTA jobs beyond the first Jina listing page.")
 
     return _dedupe_jobs(jobs)
 

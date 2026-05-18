@@ -85,7 +85,8 @@ def extract_salary(text: Optional[str]) -> str:
     text = re.sub(r"\$\s*(\d{1,3})\s*,\s*(\d{3})", r"$\1,\2", text)
     benefit_terms = (
         r"tuition|reimbursement|benefits?|retirement|401a?|457b?|paid time off|holidays?|"
-        r"insurance|employee assistance|medical|dental|vision|wellness|dependent care"
+        r"insurance|employee assistance|medical|dental|vision|wellness|dependent care|"
+        r"bonus(?:es)?|sign[- ]?on|one[- ]?time|incentive"
     )
 
     def is_benefit_context(match: re.Match) -> bool:
@@ -107,7 +108,7 @@ def extract_salary(text: Optional[str]) -> str:
     )
 
     labeled_salary_range = re.search(
-        r"\bsalary\s+range\s*(?:is|:)?\s*-?\s*(\$\s*\d[\d,.]*\s*[kK]?(?:\s*(?:[-–]|to)\s*\$?\s*\d[\d,.]*\s*[kK]?)?(?:\s*(?:hourly|annually|per\s+hour|/hour|/hr))?)",
+        r"\bsalary\s+range\s*(?:is|:)?\s*-?\s*(\$\s*\d[\d,.]*\s*[kK]?(?:\s*(?:[-–]|to)\s*\$?\s*\d[\d,.]*\s*[kK]?)?(?:\s*(?:hourly|annually|monthly|per\s+hour|per\s+month|/hour|/hr|/mo))?)",
         text,
         flags=re.IGNORECASE,
     )
@@ -115,7 +116,7 @@ def extract_salary(text: Optional[str]) -> str:
         return clean_text(labeled_salary_range.group(1))
 
     labeled_salary = re.search(
-        r"\bsalary\s*:\s*(\$\s*\d[\d,.]*\s*[kK]?(?:\s*(?:[-–]|to)\s*\$?\s*\d[\d,.]*\s*[kK]?)?(?:\s*(?:hourly|annually|per\s+hour|/hour|/hr))?)",
+        r"\bsalary\s*:\s*(\$\s*\d[\d,.]*\s*[kK]?(?:\s*(?:[-–]|to)\s*\$?\s*\d[\d,.]*\s*[kK]?)?(?:\s*(?:hourly|annually|monthly|per\s+hour|per\s+month|/hour|/hr|/mo))?)",
         text,
         flags=re.IGNORECASE,
     )
@@ -156,6 +157,14 @@ def extract_salary(text: Optional[str]) -> str:
     )
     if annual_amount and not is_benefit_context(annual_amount):
         return clean_text(annual_amount.group(1))
+
+    monthly_amount = re.search(
+        r"(\$\s*\d[\d,.]*\s*[kK]?\s*(?:[-–]|to)\s*\$?\s*\d[\d,.]*\s*[kK]?\s+Monthly|\$\s*\d[\d,.]*\s*[kK]?\s+Monthly)",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if monthly_amount and not is_benefit_context(monthly_amount):
+        return clean_text(monthly_amount.group(1))
 
     hourly_rate = re.search(
         rf"\b(?:hourly\s+rate|hourly\s+range|starting\s+pay\s+rate|pay\s+rate|rate\s+of\s+pay)\s*:?\s*-?\s*(.+?)(?=\s+(?:{stop_labels})\s*:?\b|$)",
@@ -220,7 +229,11 @@ def extract_salary(text: Optional[str]) -> str:
             money_matches = list(re.finditer(r"\b\d{2,3}(?:,\d{3})+(?:\.\d+)?\b|\b\d{2,3}\.\d{2,6}\b", section))
         if money_matches:
             end = money_matches[-1].end()
-            unit_match = re.match(r"\s*(?:per\s+hour|/hour|/hr|hourly)\b", section[end:], flags=re.IGNORECASE)
+            unit_match = re.match(
+                r"\s*(?:per\s+hour|per\s+month|/hour|/hr|/mo|hourly|monthly)\b",
+                section[end:],
+                flags=re.IGNORECASE,
+            )
             if unit_match:
                 end += unit_match.end()
             extracted = clean_text(section[:end])
@@ -248,7 +261,7 @@ def extract_salary(text: Optional[str]) -> str:
         return ""
 
     patterns = [
-        r"\$\s*\d[\d,.]*\s*[kK]?\s*(?:[-–]|to)\s*\$?\s*\d[\d,.]*\s*[kK]?(?:\s*(?:/|per)\s*(?:hour|hr))?",
+        r"\$\s*\d[\d,.]*\s*[kK]?\s*(?:[-–]|to)\s*\$?\s*\d[\d,.]*\s*[kK]?(?:\s*(?:/|per)\s*(?:hour|hr|month|mo)|\s*(?:monthly|annually))?",
         r"\$\s*\d{2,3}(?:\.\d{2})?\s*/\s*hour",
         r"\$\s*\d{2,3}(?:\.\d{2})?\s*/\s*hr",
         r"\$\s*\d{2,3}(?:\.\d{2})?\s*per\s*hour",
@@ -265,6 +278,35 @@ def extract_salary(text: Optional[str]) -> str:
 
 def salary_has_money(text: Optional[str]) -> bool:
     return bool(re.search(r"\$\s*\d", clean_text(text)))
+
+
+def _looks_like_non_salary_money(salary_text: str, context: str) -> bool:
+    if not salary_has_money(salary_text) or not context:
+        return False
+
+    non_salary_terms = r"\b(bonus(?:es)?|sign[- ]?on|service bonus|one[- ]?time|incentive)\b"
+    if not re.search(non_salary_terms, context, flags=re.IGNORECASE):
+        return False
+
+    money_tokens = re.findall(r"\$\s*\d[\d,.]*\s*[kK]?", salary_text)
+    if len(money_tokens) != 1:
+        return False
+
+    pay_label_terms = (
+        r"\b(salary range|pay range|starting salary|base salary|annual salary|monthly salary|"
+        r"hourly rate|pay rate|starting pay|rate of pay|wage|compensation)\b"
+    )
+    token_pattern = re.escape(clean_text(money_tokens[0])).replace(r"\ ", r"\s*")
+    for match in re.finditer(token_pattern, context, flags=re.IGNORECASE):
+        window = context[max(0, match.start() - 90) : match.end() + 90]
+        if re.search(non_salary_terms, window, flags=re.IGNORECASE) and not re.search(
+            pay_label_terms,
+            window,
+            flags=re.IGNORECASE,
+        ):
+            return True
+
+    return False
 
 
 def _parse_money(value: str) -> Optional[float]:
@@ -312,6 +354,10 @@ def _money_values(text: str) -> list[float]:
 def _format_money(value: float, unit: str) -> str:
     if unit == "hourly":
         return f"${value:,.2f}/hr"
+    if unit == "monthly":
+        if value != round(value):
+            return f"${value:,.2f}/mo"
+        return f"${value:,.0f}/mo"
     if value < 1000 and value != round(value):
         return f"${value:,.2f}"
     return f"${value:,.0f}"
@@ -364,12 +410,27 @@ def parse_salary(salary_text: Optional[str]) -> dict:
     salary_max = max(values)
     salary_midpoint = round((salary_min + salary_max) / 2, 2)
     is_hourly = bool(re.search(r"\b(hour|hourly|hr)\b|/\s*h", normalized))
+    money_pattern = r"\$\s*\d[\d,.]*\s*[kK]?"
+    is_monthly = bool(
+        re.search(
+            rf"{money_pattern}(?:\s*(?:[-–]|to)\s*\$?\s*\d[\d,.]*\s*[kK]?)?\s*(?:monthly|per\s+month|/\s*mo)\b",
+            normalized,
+        )
+        or re.search(rf"\b(?:monthly|per\s+month)\s*:?\s*{money_pattern}", normalized)
+    )
     is_annual = (
         bool(re.search(r"\b(year|annual|annually|salary|per annum)\b", normalized))
-        or salary_max >= 1000
+        or (salary_max >= 1000 and not is_monthly)
     )
 
-    if salary_max < 1000 and (is_hourly or not is_annual or re.search(r"\bannually\b", normalized)):
+    if is_monthly:
+        unit = "monthly"
+        annual_min = round(salary_min * 12)
+        annual_max = round(salary_max * 12)
+        annual_mid = round(salary_midpoint * 12)
+        comparable = True
+        confidence = "high"
+    elif salary_max < 1000 and (is_hourly or not is_annual or re.search(r"\bannually\b", normalized)):
         unit = "hourly"
         annual_min = round(salary_min * 2080)
         annual_max = round(salary_max * 2080)
@@ -515,11 +576,14 @@ def normalize_job(
     source_url = clean_text(source_url)
     description = clean_text(description)
     raw_context = clean_text(raw_context)
-    salary_text = clean_text(salary_text)
+    salary_text = repair_split_money(salary_text)
     posted_date = clean_date_text(posted_date)
     closing_date = clean_date_text(closing_date)
+    salary_context = clean_text(" ".join(value for value in [title, raw_context, description] if value))
+    if _looks_like_non_salary_money(salary_text, salary_context):
+        salary_text = ""
     if not salary_has_money(salary_text):
-        salary_text = extract_salary(raw_context or description) or salary_text
+        salary_text = extract_salary(salary_context) or salary_text
     salary_fields = parse_salary(salary_text)
     category_text = raw_context or description
     category = category or classify_category(title, category_text)

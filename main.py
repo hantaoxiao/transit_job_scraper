@@ -127,6 +127,8 @@ def _env_int(name: str, default: int) -> int:
 DEFAULT_SCRAPER_WORKERS = _env_int("SCRAPER_WORKERS", 6)
 DEFAULT_GOVJOBS_AGENCY_WORKERS = _env_int("GOVJOBS_AGENCY_WORKERS", 2)
 DEFAULT_RISKY_SCRAPER_TIMEOUT = _env_int("RISKY_SCRAPER_TIMEOUT", 180)
+MIN_TOTAL_JOBS = _env_int("SCRAPER_MIN_TOTAL_JOBS", 100)
+ZERO_AGENCY_CACHE_MIN = _env_int("SCRAPER_ZERO_AGENCY_CACHE_MIN", 10)
 SERIAL_PLATFORMS = {"mta_custom"}
 RISKY_PLATFORM_TIMEOUTS = {
     "mta_custom": 300,
@@ -136,6 +138,85 @@ RISKY_PLATFORM_TIMEOUTS = {
     "adp": 60,
     "dayforce": 45,
 }
+
+
+def _env_float(name: str, default: float) -> float:
+    try:
+        return max(0.0, float(os.getenv(name, str(default))))
+    except ValueError:
+        return default
+
+
+def _env_flag(name: str, default: bool = False) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.lower() in {"1", "true", "yes"}
+
+
+def _truthy_count(series: pd.Series) -> int:
+    return int(series.fillna(False).astype(str).str.lower().isin({"true", "1", "yes"}).sum())
+
+
+def _load_previous_output(output_path: Path) -> pd.DataFrame:
+    if not output_path.exists():
+        return pd.DataFrame()
+    try:
+        return pd.read_csv(output_path).fillna("")
+    except (OSError, pd.errors.EmptyDataError, pd.errors.ParserError) as exc:
+        print(f"Could not read previous scrape cache from {output_path}: {exc}", flush=True)
+        return pd.DataFrame()
+
+
+def _preserve_zero_count_agency_cache(df: pd.DataFrame, previous_df: pd.DataFrame) -> pd.DataFrame:
+    if df.empty:
+        return df
+    if previous_df.empty or "agency" not in previous_df.columns:
+        return df
+    if not _env_flag("SCRAPER_PRESERVE_AGENCY_CACHE_ON_ZERO", True):
+        return df
+
+    configured_agencies = {agency["agency"] for agency in AGENCIES}
+    current_counts = df["agency"].value_counts() if "agency" in df.columns else pd.Series(dtype=int)
+    previous_counts = previous_df["agency"].value_counts()
+    agencies_to_preserve = [
+        agency
+        for agency, previous_count in previous_counts.items()
+        if agency in configured_agencies
+        and previous_count >= ZERO_AGENCY_CACHE_MIN
+        and current_counts.get(agency, 0) == 0
+    ]
+
+    if not agencies_to_preserve:
+        return df
+
+    preserved = previous_df[previous_df["agency"].isin(agencies_to_preserve)]
+    print(
+        "Preserving cached rows for agencies that unexpectedly scraped zero jobs: "
+        + ", ".join(f"{agency} ({int(previous_counts[agency])})" for agency in agencies_to_preserve),
+        flush=True,
+    )
+    return pd.concat([df, preserved], ignore_index=True, sort=False)
+
+
+def _validate_output_size(df: pd.DataFrame, previous_df: pd.DataFrame) -> None:
+    total_jobs = len(df)
+    if total_jobs < MIN_TOTAL_JOBS:
+        raise RuntimeError(
+            f"Refusing to publish only {total_jobs} jobs; expected at least {MIN_TOTAL_JOBS}. "
+            "Set SCRAPER_MIN_TOTAL_JOBS to override."
+        )
+
+    if previous_df.empty:
+        return
+
+    previous_total = len(previous_df)
+    min_ratio = _env_float("SCRAPER_MIN_TOTAL_RATIO", 0.5)
+    if previous_total >= MIN_TOTAL_JOBS and total_jobs < previous_total * min_ratio:
+        raise RuntimeError(
+            f"Refusing to publish {total_jobs} jobs because previous cache had {previous_total}; "
+            f"minimum allowed ratio is {min_ratio:.2f}. Set SCRAPER_MIN_TOTAL_RATIO to override."
+        )
 
 
 def write_site_data(df: pd.DataFrame, site_dir: Path) -> None:
@@ -150,8 +231,8 @@ def write_site_data(df: pd.DataFrame, site_dir: Path) -> None:
     if not df.empty:
         for agency, group in df.groupby("agency"):
             total = len(group)
-            salary_listed = int(group.get("salary_is_listed", pd.Series(dtype=bool)).fillna(False).sum())
-            comparable_salary = int(group.get("salary_is_comparable", pd.Series(dtype=bool)).fillna(False).sum())
+            salary_listed = _truthy_count(group.get("salary_is_listed", pd.Series(dtype=bool)))
+            comparable_salary = _truthy_count(group.get("salary_is_comparable", pd.Series(dtype=bool)))
             closing_dates = int(group.get("closing_date", pd.Series(dtype=str)).fillna("").astype(bool).sum())
             agencies.append(
                 {
@@ -396,13 +477,17 @@ def run_all_scrapers() -> list[dict]:
 if __name__ == "__main__":
     output_dir = Path("output")
     output_dir.mkdir(exist_ok=True)
+    output_path = output_dir / "transit_jobs.csv"
+    previous_df = _load_previous_output(output_path)
 
     jobs = run_all_scrapers()
     df = pd.DataFrame(jobs)
 
     if df.empty:
         print("\nNo jobs were collected. Some sites may block scraping or require custom parsers.")
-    else:
+
+    df = _preserve_zero_count_agency_cache(df, previous_df)
+    if not df.empty:
         df = df.drop_duplicates(subset=["job_id"])
         sort_cols = [
             col
@@ -410,8 +495,8 @@ if __name__ == "__main__":
             if col in df.columns
         ]
         df = df.sort_values(sort_cols).reset_index(drop=True)
+    _validate_output_size(df, previous_df)
 
-    output_path = output_dir / "transit_jobs.csv"
     df.to_csv(output_path, index=False)
     write_site_data(df, Path("site"))
 

@@ -26,9 +26,14 @@ jobs:
 
     env:
       PYTHONUNBUFFERED: "1"
+      PYTHONDONTWRITEBYTECODE: "1"
       SCRAPER_WORKERS: "6"
       GOVJOBS_AGENCY_WORKERS: "2"
       GOVJOBS_RETRIES: "2"
+      SCRAPER_MIN_TOTAL_JOBS: "100"
+      SCRAPER_MIN_TOTAL_RATIO: "0.50"
+      SCRAPER_ZERO_AGENCY_CACHE_MIN: "10"
+      SCRAPER_PRESERVE_AGENCY_CACHE_ON_ZERO: "1"
       MTA_JINA_LIST_WORKERS: "4"
       MTA_JINA_DETAIL_WORKERS: "8"
       MTA_JINA_RETRIES: "3"
@@ -55,6 +60,9 @@ jobs:
 
       - name: Install browser dependencies
         run: python -m playwright install --with-deps chromium
+
+      - name: Run regression tests
+        run: python -m unittest discover -s tests
 
       - name: Restore previous scrape cache
         uses: actions/cache/restore@v4

@@ -792,8 +792,9 @@
   function salaryRangeRows(job) {
     if (!truthy(job.salary_is_listed) || !truthy(job.salary_is_comparable)) return "";
     const isHourly = job.salary_unit === "hourly";
-    const min = numeric(isHourly ? job.salary_min : job.salary_annual_min_est);
-    const max = numeric(isHourly ? job.salary_max : job.salary_annual_max_est);
+    const isMonthly = job.salary_unit === "monthly";
+    const min = numeric(isHourly || isMonthly ? job.salary_min : job.salary_annual_min_est);
+    const max = numeric(isHourly || isMonthly ? job.salary_max : job.salary_annual_max_est);
     if (!min && !max) return "";
 
     return `
@@ -806,6 +807,7 @@
 
   function formatSalaryValue(value, unit) {
     if (unit === "hourly") return `$${Number(value).toFixed(2)}/hr`;
+    if (unit === "monthly") return `${money.format(value)}/mo`;
     return money.format(value);
   }
 
