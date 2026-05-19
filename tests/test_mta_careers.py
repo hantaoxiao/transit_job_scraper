@@ -149,6 +149,12 @@ class MtaCareersTests(unittest.TestCase):
         self.assertEqual(details["detail_location"], "New York, NY, United States")
         self.assertEqual(details["salary_text"], "$149,247 to $186,559")
 
+    def test_location_parser_strips_zip_from_state(self):
+        city, state = mta_custom._location_to_city_state("New York, NY 10004, United States", AGENCY)
+
+        self.assertEqual(city, "New York")
+        self.assertEqual(state, "NY")
+
     def test_careers_detail_preserves_hourly_salary_context(self):
         salary = mta_custom._salary_from_detail({}, HOURLY_DETAIL_TEXT)
 

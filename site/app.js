@@ -249,6 +249,19 @@
     return Number.isNaN(date.getTime()) ? 0 : date.getTime();
   }
 
+  function stateCode(value) {
+    const text = String(value || "").trim().toUpperCase();
+    if (!text) return "";
+
+    const stateZip = text.match(/^([A-Z]{2})(?:\s+\d{5}(?:-\d{4})?)?$/);
+    if (stateZip) return stateZip[1];
+
+    const embeddedState = text.match(/\b([A-Z]{2})\s+\d{5}(?:-\d{4})?\b/);
+    if (embeddedState) return embeddedState[1];
+
+    return text;
+  }
+
   function replaceOptions(select, values, allLabel, counts = new Map()) {
     const previousValue = select.value;
     select.replaceChildren();
@@ -520,7 +533,7 @@
     return (
       (excluded.has("query") || !filters.query || matchesSearch(job, filters.query)) &&
       (excluded.has("agency") || !filters.agency || job.agency === filters.agency) &&
-      (excluded.has("state") || !filters.state || job.state === filters.state) &&
+      (excluded.has("state") || !filters.state || stateCode(job.state) === filters.state) &&
       (excluded.has("category") || !filters.category || job.category === filters.category) &&
       (excluded.has("seniority") || !filters.seniority || job.ai_sort_seniority === filters.seniority) &&
       (excluded.has("employmentType") || !filters.employmentType || employmentTypeBucket(job) === filters.employmentType) &&
@@ -555,7 +568,7 @@
     const agencyOptions = optionValuesFor("agency", (job) => job.agency);
     changed = replaceOptions(els.agencyFilter, agencyOptions.values, "All agencies", agencyOptions.counts) || changed;
 
-    const stateOptions = optionValuesFor("state", (job) => job.state);
+    const stateOptions = optionValuesFor("state", (job) => stateCode(job.state));
     changed = replaceOptions(els.stateFilter, stateOptions.values, "All states", stateOptions.counts) || changed;
 
     const categoryOptions = optionValuesFor("category", (job) => job.category);
@@ -923,6 +936,7 @@
     ];
 
     filterInputs.forEach((input) => input.addEventListener("input", () => {
+      els.sortSelect.value = DEFAULT_SORT;
       updateSalaryOutput();
       refreshFilterOptions();
       resetPage();

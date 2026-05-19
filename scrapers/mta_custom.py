@@ -126,6 +126,7 @@ STATE_ABBREVIATIONS = {
     "New Jersey": "NJ",
     "New York": "NY",
 }
+STATE_NAME_TO_ABBR = {key.upper(): value for key, value in STATE_ABBREVIATIONS.items()}
 
 _ACTIVE_IMPERSONATE = FALLBACK_IMPERSONATES[0] if FALLBACK_IMPERSONATES else CURL_IMPERSONATE
 
@@ -459,7 +460,12 @@ def _location_to_city_state(location: str, agency: dict) -> tuple[str, str]:
         city = parts[0]
     if len(parts) > 1:
         state_candidate = parts[-1].upper()
-        if re.fullmatch(r"[A-Z]{2}", state_candidate):
+        state_zip = re.match(r"^([A-Z]{2})(?:\s+\d{5}(?:-\d{4})?)?$", state_candidate)
+        if state_zip:
+            state = state_zip.group(1)
+        elif state_candidate in STATE_NAME_TO_ABBR:
+            state = STATE_NAME_TO_ABBR[state_candidate]
+        elif re.fullmatch(r"[A-Z]{2}", state_candidate):
             state = state_candidate
         elif state_candidate not in {"UNITED STATES", "USA"}:
             state = parts[-1]
