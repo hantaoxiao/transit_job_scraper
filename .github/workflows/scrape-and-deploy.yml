@@ -17,7 +17,7 @@ permissions:
 
 jobs:
   scrape-and-deploy:
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     timeout-minutes: 75
 
     environment:
@@ -26,12 +26,28 @@ jobs:
 
     env:
       PYTHONUNBUFFERED: "1"
+      PYTHONDONTWRITEBYTECODE: "1"
       SCRAPER_WORKERS: "6"
-      GOVJOBS_AGENCY_WORKERS: "2"
-      GOVJOBS_RETRIES: "2"
-      MTA_JINA_LIST_WORKERS: "4"
-      MTA_JINA_DETAIL_WORKERS: "8"
-      MTA_JINA_RETRIES: "3"
+      SCRAPER_DETAIL_CACHE: "0"
+      GOVJOBS_AGENCY_WORKERS: "1"
+      GOVJOBS_RETRIES: "3"
+      GOVJOBS_CONNECT_TIMEOUT: "12"
+      GOVJOBS_REQUEST_DELAY: "0.4"
+      GOVJOBS_AGENCY_DELAY: "0.8"
+      SCRAPER_MIN_TOTAL_JOBS: "100"
+      SCRAPER_MIN_TOTAL_RATIO: "0.50"
+      SCRAPER_ZERO_AGENCY_CACHE_MIN: "10"
+      SCRAPER_FAILED_AGENCY_CACHE_MIN: "1"
+      SCRAPER_PARTIAL_CACHE_AGENCIES: "MTA"
+      SCRAPER_AGENCY_MIN_TOTAL_RATIO: "0.75"
+      SCRAPER_PRESERVE_AGENCY_CACHE_ON_ZERO: "1"
+      MTA_SCRAPER_TIMEOUT: "900"
+      MTA_CAREERS_PER_PAGE: "100"
+      MTA_CAREERS_MAX_PAGES: "20"
+      MTA_CAREERS_DELAY: "0.25"
+      MTA_DETAIL_WORKERS: "12"
+      MTA_REQUEST_TIMEOUT: "30"
+      MTA_DETAIL_DELAY: "0"
       WORKDAY_DETAIL_WORKERS: "8"
       UKG_DETAIL_WORKERS: "8"
       JOBS2WEB_DETAIL_WORKERS: "8"
@@ -53,26 +69,19 @@ jobs:
       - name: Install Python dependencies
         run: pip install -r requirements.txt
 
-      - name: Install browser dependencies
+      - name: Install browser dependencies on Linux
+        if: runner.os == 'Linux'
         run: python -m playwright install --with-deps chromium
 
-      - name: Restore previous scrape cache
-        uses: actions/cache/restore@v4
-        with:
-          path: output/transit_jobs.csv
-          key: transit-jobs-output-${{ github.run_id }}
-          restore-keys: |
-            transit-jobs-output-
+      - name: Install browser dependencies on non-Linux
+        if: runner.os != 'Linux'
+        run: python -m playwright install chromium
+
+      - name: Run regression tests
+        run: python -m unittest discover -s tests
 
       - name: Scrape jobs and build static data
         run: python main.py
-
-      - name: Save scrape cache
-        if: always()
-        uses: actions/cache/save@v4
-        with:
-          path: output/transit_jobs.csv
-          key: transit-jobs-output-${{ github.run_id }}
 
       - name: Upload CSV artifact
         if: always()

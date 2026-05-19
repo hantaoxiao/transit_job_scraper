@@ -1,7 +1,7 @@
 import unittest
 
-from normalizer import extract_salary, parse_salary, repair_split_money
-from scrapers.mta_custom import _extract_labeled_section
+from normalizer import extract_salary, normalize_job, parse_salary, repair_split_money
+from scrapers.mta_custom import _clean_compensation_section, _extract_labeled_section
 
 
 class SalaryParsingTests(unittest.TestCase):
@@ -56,6 +56,44 @@ class SalaryParsingTests(unittest.TestCase):
             repair_split_money(_extract_labeled_section(detail_text, "Salary Range")),
             "$129,446 to $161,807",
         )
+
+    def test_monthly_salary_is_annualized_for_comparison(self):
+        parsed = parse_salary("Full-Time Permanent - $6,535.00 - $7,485.00 Monthly")
+
+        self.assertEqual(parsed["salary_unit"], "monthly")
+        self.assertEqual(parsed["salary_range_display"], "$6,535/mo - $7,485/mo")
+        self.assertEqual(parsed["salary_annual_min_est"], 78420)
+        self.assertEqual(parsed["salary_annual_max_est"], 89820)
+
+    def test_sign_on_bonus_is_not_treated_as_salary(self):
+        self.assertEqual(extract_salary("Bus Operator - CapMetro($4,000 Sign-On Bonus)"), "")
+
+    def test_normalizer_discards_bonus_that_arrives_as_salary_text(self):
+        job = normalize_job(
+            title="Facilities Maintenance Mechanic *$3,000 Service Bonus*",
+            agency="Hampton Roads Transit",
+            city="Hampton",
+            state="VA",
+            source_url="https://example.com/job",
+            platform="workday",
+            salary_text="$3,000",
+            raw_context="Facilities Maintenance Mechanic *$3,000 Service Bonus* Hampton, VA Posted 30+ Days Ago",
+        )
+
+        self.assertFalse(job["salary_is_listed"])
+        self.assertEqual(job["salary_unit"], "unknown")
+
+    def test_mta_compensation_section_stops_before_description_headings(self):
+        salary = _clean_compensation_section(
+            "Computer Associate (Operations) I: $68,468 Computer Associate (Software) II: $102,348 "
+            "Responsibilities Preparing concise status updates and monthly reports. "
+            "Other Information financial disclosure threshold $105,472"
+        )
+        parsed = parse_salary(salary)
+
+        self.assertNotIn("Responsibilities", salary)
+        self.assertEqual(parsed["salary_unit"], "annual")
+        self.assertEqual(parsed["salary_annual_max_est"], 102348)
 
 
 if __name__ == "__main__":

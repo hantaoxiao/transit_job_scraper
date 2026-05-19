@@ -130,12 +130,17 @@ def _render_many_pages(urls: list[str], wait_ms: int = 8000, workers: int | None
 
 
 def _jina_markdown(url: str) -> str:
-    candidates = [f"https://r.jina.ai/http://{url}"]
-    if url.startswith("https://"):
-        candidates.append(f"https://r.jina.ai/http://http://{url.removeprefix('https://')}")
+    parsed = urlparse(url)
+    if parsed.scheme in {"http", "https"}:
+        target = f"{parsed.netloc}{parsed.path}"
+        if parsed.query:
+            target += f"?{parsed.query}"
+        candidates = [f"https://r.jina.ai/http://{target}", f"https://r.jina.ai/http://{url}"]
+    else:
+        candidates = [f"https://r.jina.ai/http://{url}"]
 
     best = ""
-    for candidate in candidates:
+    for candidate in dict.fromkeys(candidates):
         try:
             response = requests.get(candidate, headers=HEADERS, timeout=45)
             response.raise_for_status()
@@ -153,6 +158,11 @@ def _markdown_to_text(markdown: str) -> str:
     text = re.sub(r"!\[[^\]]*\]\([^)]+\)", " ", markdown)
     text = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", text)
     return clean_text(re.sub(r"[*_#>`]+", " ", text))
+
+
+def _markdown_label_value(block: str, label: str) -> str:
+    match = re.search(rf"(?im)^\s*{re.escape(label)}:\s*(.+?)\s*$", block)
+    return clean_text(match.group(1)) if match else ""
 
 
 def _city_state_from_location(location: str, agency: dict) -> tuple[str, str]:
@@ -1669,34 +1679,54 @@ def scrape_gcrta_custom(agency: dict) -> list[dict]:
     return jobs
 
 
-def scrape_panynj_custom(agency: dict) -> list[dict]:
-    markdown = _jina_markdown(agency["jobs_url"])
+def _parse_panynj_listing_markdown(markdown: str, agency: dict) -> list[dict]:
     entries = []
     seen_urls = set()
-    pattern = re.compile(
-        r"Job Title:\s+\[([^\]]+)\]\((https://www\.jointheportauthority\.com/jobs/[^)]+)\)\s+"
-        r"Job ID:\s*([^\n]+)\s+Job Family:\s*([^\n]*)\s+Department:\s*([^\n]*)\s+Location:\s*([^\n]+)",
-        flags=re.DOTALL,
+    title_matches = list(
+        re.finditer(
+            r"(?im)^\s*Job Title:\s*\[([^\]]+)\]\((https://www\.jointheportauthority\.com/jobs/[^)]+)\)\s*$",
+            markdown,
+        )
     )
-    for title, source_url, job_id, family, department, location in pattern.findall(markdown):
+
+    for index, match in enumerate(title_matches):
+        block_end = title_matches[index + 1].start() if index + 1 < len(title_matches) else len(markdown)
+        block = markdown[match.end() : block_end]
+        title = clean_text(match.group(1))
+        source_url = urljoin(agency["jobs_url"], match.group(2))
         if source_url in seen_urls:
             continue
         seen_urls.add(source_url)
+
+        job_id = _markdown_label_value(block, "Job ID")
+        if not job_id:
+            continue
+
+        family = _markdown_label_value(block, "Job Family")
+        department = _markdown_label_value(block, "Department")
+        location = _markdown_label_value(block, "Location")
         city, state = _city_state_from_location(location, agency)
         cached = cached_job(agency["agency"], source_url=source_url, requisition_id=job_id, title=title)
         entries.append(
             {
-                "title": clean_text(title),
+                "title": title,
                 "source_url": source_url,
-                "job_id": clean_text(job_id),
-                "family": clean_text(family),
-                "department": clean_text(department),
-                "location": clean_text(location),
+                "job_id": job_id,
+                "family": family,
+                "department": department,
+                "location": location,
                 "city": city,
                 "state": state,
                 "cached": cached,
             }
         )
+
+    return entries
+
+
+def scrape_panynj_custom(agency: dict) -> list[dict]:
+    markdown = _jina_markdown(agency["jobs_url"])
+    entries = _parse_panynj_listing_markdown(markdown, agency)
 
     detail_markdowns = {}
     pending = [entry for entry in entries if not has_cached_detail(entry["cached"])]
