@@ -19,7 +19,7 @@ The website is designed for job hunting. It supports keyword search, agency/stat
 The scraper runner is optimized for repeat full refreshes:
 
 - HTTP/API-based scrapers run concurrently by default
-- Browser-heavy and custom rendered scrapers run one agency at a time by default, with MTA kept serial for its challenge/cache flow
+- Browser-heavy and custom rendered scrapers run one agency at a time by default, with MTA kept serial because it is the largest agency
 - Large detail-page loops are fetched concurrently within each agency where the source supports it
 - Repeat runs reuse prior detail fields for still-open jobs, so the live listing stays fresh without reopening every unchanged detail page
 - Each agency log line includes elapsed time, making slow portals easy to spot
@@ -155,7 +155,7 @@ The California expansion uses the 2024 agency workbook as the source list and ad
 Implemented platform scrapers:
 
 - `governmentjobs` - GovernmentJobs / NEOGOV endpoint and detail pages
-- `mta_custom` - MTA custom career site with browser fallback and detail cache
+- `mta_custom` - MTA careers site through non-browser `curl_cffi` Chrome impersonation
 - `taleo` - Taleo jobboard API, used for CTA
 - `taleo_v2` - Rendered Taleo v2 boards, used for PSTA
 - `successfactors` - SEPTA
@@ -166,7 +166,7 @@ Implemented platform scrapers:
 - `sf_careers` - SFMTA / City and County of San Francisco careers
 - `peoplesoft_wmata` - WMATA PeopleSoft listings
 - `jobs2web` - Jobs2Web / SAP-style boards, used for Houston METRO
-- `jobvite` - Jobvite boards, used for PATH / PANYNJ
+- `panynj_custom` - Port Authority/PATH text-rendered listings and detail pages
 - `cadient` - Cadient boards, used for Metra
 - `adp` - ADP WorkForce Now API plus rendered fallback for newer boards
 - `applicantpro` - ApplicantPro listings with JSON-LD detail extraction
@@ -226,13 +226,13 @@ San Diego MTS is currently marked with `skip_scrape_reason` because its ADP rend
 
 The repository includes `.github/workflows/scrape-and-deploy.yml` for GitHub Pages. It can be run manually from the Actions tab and is scheduled for every 2 hours on weekdays from 7 AM through 7 PM Eastern time.
 
-The workflow installs dependencies, installs Playwright Chromium, restores the previous `output/transit_jobs.csv` cache, runs `python main.py`, uploads the latest CSV as a short-lived artifact, saves the CSV cache for the next scheduled run, and deploys the generated `site/` folder to GitHub Pages. Enable Pages with source set to GitHub Actions in the repository settings before relying on the scheduled deployment.
+The workflow installs dependencies, installs Playwright Chromium, runs `python main.py` from a clean checkout with scrape detail caching disabled, uploads the latest CSV as a short-lived artifact, and deploys the generated `site/` folder to GitHub Pages. Enable Pages with source set to GitHub Actions in the repository settings before relying on the scheduled deployment.
 
-In CI, MTA first tries direct requests. If the MTA site blocks GitHub Actions, the scraper uses a live text-rendered MTA listing fallback so the open job list stays current, enriches new MTA jobs from live detail pages, and reuses cached detail fields only for still-open jobs it has already seen.
+In CI, MTA uses the current careers site with `curl_cffi` Chrome impersonation, reads listing pages with `per_page=100`, and enriches salary/detail fields from each live detail page without Playwright or Jobvite.
 
 GovernmentJobs agencies are listing-first for scheduled runs. The listing endpoint already includes salary, schedule, department/category hints, posted/closing text, and a description preview, so the scraper avoids opening every detail page unless `GOVJOBS_FETCH_DETAILS=1` is explicitly set.
 
-Several detail-heavy boards, including Workday, UKG, Oracle, SuccessFactors, Jobs2Web, NJ Transit, PATH, UTA, CDTA, and NFTA, also reuse cached detail fields for unchanged current jobs. This keeps the job list fresh from each live listing page while making scheduled refreshes much faster and less likely to hit portal timeouts.
+Several detail-heavy boards, including Workday, UKG, Oracle, SuccessFactors, Jobs2Web, NJ Transit, PATH, UTA, CDTA, and NFTA, can reuse cached detail fields for unchanged current jobs during local repeat runs. The GitHub Actions workflow disables this cache so scheduled deployments are built from a fresh scrape.
 
 Outputs:
 
@@ -273,15 +273,15 @@ Salary handling prioritizes precision for job seekers:
 
 If a job does not list pay, the site shows `Salary not listed`.
 
-## MTA Detail Cache
+## Detail Cache
 
-MTA detail pages are slow because the site often requires browser fallback. To avoid reopening every detail page on each run, the MTA scraper reads existing MTA jobs from:
+For local repeat runs, detail-heavy scrapers can read existing jobs from:
 
 ```text
 output/transit_jobs.csv
 ```
 
-During browser fallback, it still scans the current MTA listing pages to find open jobs, but it reuses cached detail data for any MTA job URL already present in the dataset. Only new MTA job URLs need detail-page enrichment.
+Set `SCRAPER_DETAIL_CACHE=0` or `SCRAPER_REFRESH_CACHED_DETAILS=1` when you want a from-scratch scrape that reopens detail pages instead of reusing prior detail fields. The GitHub Actions workflow sets `SCRAPER_DETAIL_CACHE=0`.
 
 ## Project Structure
 
@@ -299,7 +299,6 @@ transit_job_scraper/
 │   ├── browser_jobboard.py
 │   ├── cadient.py
 │   ├── governmentjobs.py
-│   ├── jobvite.py
 │   ├── jobs2web.py
 │   ├── mta_custom.py
 │   ├── oracle.py
