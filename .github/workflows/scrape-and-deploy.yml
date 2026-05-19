@@ -71,6 +71,30 @@ jobs:
       - name: Install Python dependencies
         run: pip install -r requirements.txt
 
+      - name: Install GNU tar on macOS
+        if: runner.os == 'macOS'
+        run: |
+          if ! command -v brew >/dev/null 2>&1; then
+            if [ -x /opt/homebrew/bin/brew ]; then
+              eval "$(/opt/homebrew/bin/brew shellenv)"
+            elif [ -x /usr/local/bin/brew ]; then
+              eval "$(/usr/local/bin/brew shellenv)"
+            fi
+          fi
+          if command -v gtar >/dev/null 2>&1; then
+            gtar --version
+            exit 0
+          fi
+          if ! command -v brew >/dev/null 2>&1; then
+            echo "Homebrew is required on macOS self-hosted runners so actions/upload-pages-artifact can use gtar." >&2
+            echo "Install Homebrew or run: brew install gnu-tar" >&2
+            exit 1
+          fi
+          brew list gnu-tar >/dev/null 2>&1 || brew install gnu-tar
+          echo "$(brew --prefix)/bin" >> "$GITHUB_PATH"
+          echo "$(brew --prefix gnu-tar)/libexec/gnubin" >> "$GITHUB_PATH"
+          gtar --version
+
       - name: Install browser dependencies on Linux
         if: runner.os == 'Linux'
         run: python -m playwright install --with-deps chromium
