@@ -155,7 +155,7 @@ The California expansion uses the 2024 agency workbook as the source list and ad
 Implemented platform scrapers:
 
 - `governmentjobs` - GovernmentJobs / NEOGOV endpoint and detail pages
-- `mta_custom` - MTA careers JSON listing feed plus non-browser detail pages through `curl_cffi`
+- `mta_custom` - MTA careers site through non-browser `curl_cffi` Chrome impersonation
 - `taleo` - Taleo jobboard API, used for CTA
 - `taleo_v2` - Rendered Taleo v2 boards, used for PSTA
 - `successfactors` - SEPTA
@@ -228,7 +228,7 @@ The repository includes `.github/workflows/scrape-and-deploy.yml` for GitHub Pag
 
 The workflow installs dependencies, installs Playwright Chromium, runs `python main.py` from a clean checkout with scrape detail caching disabled, uploads the latest CSV as a short-lived artifact, and deploys the generated `site/` folder to GitHub Pages. Enable Pages with source set to GitHub Actions in the repository settings before relying on the scheduled deployment.
 
-In CI, MTA uses the current careers site's `/search/jobs.json` feed with `curl_cffi`, then enriches salary, posted date, job ID, and detail fields from each live detail page without Playwright or Jobvite. The workflow gives MTA a longer isolated timeout because a clean no-cache run currently opens hundreds of MTA detail pages.
+In CI, MTA uses the current careers site with `curl_cffi` Chrome impersonation, reads listing pages with `per_page=100`, and enriches salary/detail fields from each live detail page without Playwright or Jobvite.
 
 GovernmentJobs agencies are listing-first for scheduled runs. The listing endpoint already includes salary, schedule, department/category hints, posted/closing text, and a description preview, so the scraper avoids opening every detail page unless `GOVJOBS_FETCH_DETAILS=1` is explicitly set.
 
