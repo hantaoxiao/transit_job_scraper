@@ -1,3 +1,4 @@
+import json
 import os
 import re
 import time
@@ -16,6 +17,7 @@ from scrapers.detail_cache import cached_job, has_cached_detail
 
 BASE_URL = "https://careers.mta.org"
 SEARCH_URL = "https://careers.mta.org/search/jobs/in"
+SEARCH_JSON_URL = "https://careers.mta.org/search/jobs.json"
 DEFAULT_DETAIL_WORKERS = 8
 DEFAULT_PER_PAGE = 100
 DEFAULT_MAX_PAGES = 20
@@ -102,10 +104,54 @@ MAX_PAGES = _env_int("MTA_CAREERS_MAX_PAGES", DEFAULT_MAX_PAGES)
 LISTING_DELAY = _env_float("MTA_CAREERS_DELAY", DEFAULT_LISTING_DELAY)
 DETAIL_DELAY = _env_float("MTA_DETAIL_DELAY", DEFAULT_DETAIL_DELAY)
 CURL_IMPERSONATE = os.getenv("MTA_CURL_IMPERSONATE", "chrome124")
+FALLBACK_IMPERSONATES = tuple(
+    dict.fromkeys(
+        value.strip()
+        for value in os.getenv("MTA_CURL_IMPERSONATES", f"{CURL_IMPERSONATE},safari17_0").split(",")
+        if value.strip()
+    )
+)
+JSON_HEADERS = {
+    "Accept": "application/json, text/javascript, */*; q=0.01",
+    "X-Requested-With": "XMLHttpRequest",
+    "Referer": "https://careers.mta.org/search/jobs/in?page=1&per_page=100",
+}
+DETAIL_HEADERS = {
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Referer": "https://careers.mta.org/search/jobs/in?page=1&per_page=100",
+}
+STATE_ABBREVIATIONS = {
+    "Connecticut": "CT",
+    "District of Columbia": "DC",
+    "New Jersey": "NJ",
+    "New York": "NY",
+}
+STATE_NAME_TO_ABBR = {key.upper(): value for key, value in STATE_ABBREVIATIONS.items()}
+MTA_NY_LOCALITIES = {
+    "BRONX",
+    "BROOKLYN",
+    "FLUSHING",
+    "HOLLIS",
+    "JAMAICA",
+    "MANHATTAN",
+    "NEW YORK",
+    "QUEENS",
+    "STATEN ISLAND",
+    "WOODSIDE",
+}
+
+_ACTIVE_IMPERSONATE = FALLBACK_IMPERSONATES[0] if FALLBACK_IMPERSONATES else CURL_IMPERSONATE
 
 
-def _new_careers_session():
-    return curl_requests.Session(impersonate=CURL_IMPERSONATE)
+def _new_careers_session(impersonate: Optional[str] = None):
+    return curl_requests.Session(impersonate=impersonate or _ACTIVE_IMPERSONATE)
+
+
+def _set_active_impersonate(impersonate: str) -> None:
+    global _ACTIVE_IMPERSONATE
+    _ACTIVE_IMPERSONATE = impersonate
+    if hasattr(_THREAD_LOCAL, "session"):
+        delattr(_THREAD_LOCAL, "session")
 
 
 def _thread_session():
@@ -128,12 +174,16 @@ def _careers_page_url(page: int, per_page: int = PER_PAGE) -> str:
     return f"{SEARCH_URL}?{urlencode({'page': page, 'per_page': per_page})}"
 
 
+def _careers_json_url(page: int, per_page: int = PER_PAGE) -> str:
+    return f"{SEARCH_JSON_URL}?{urlencode({'page': page, 'per_page': per_page})}"
+
+
 def _parse_mta_date(value: str) -> str:
     value = clean_text(value)
     if not value:
         return ""
 
-    for date_format in ("%b %d, %Y", "%B %d, %Y"):
+    for date_format in ("%Y-%m-%d", "%b %d, %Y", "%B %d, %Y"):
         try:
             return datetime.strptime(value, date_format).date().isoformat()
         except ValueError:
@@ -214,33 +264,139 @@ def _parse_careers_search_page(html: str, agency: dict, page_url: str, normalize
     return summaries
 
 
-def _scrape_careers_summaries(agency: dict) -> list[dict]:
-    session = _thread_session()
-    _warm_up_session(session)
+def _entry_location_text(location: dict) -> str:
+    if not isinstance(location, dict):
+        return ""
+
+    parts = [
+        clean_text(location.get("locality")),
+        clean_text(location.get("region_abbr") or location.get("region_full")),
+        clean_text(location.get("country")),
+    ]
+    return ", ".join(part for part in parts if part)
+
+
+def _entry_source_url(entry: dict) -> str:
+    entry_id = clean_text(entry.get("id") or entry.get("talemetry_job_id"))
+    permalink = clean_text(entry.get("permalink"))
+    if entry_id and permalink:
+        return f"{BASE_URL}/jobs/{entry_id}-{permalink}"
+    if entry_id:
+        return f"{BASE_URL}/jobs/{entry_id}"
+    return ""
+
+
+def _parse_careers_search_json(data: dict, agency: dict, normalize: bool = False) -> list[dict]:
+    summaries = []
+    seen_ids = set()
+
+    for entry in data.get("entries", []):
+        if not isinstance(entry, dict):
+            continue
+
+        internal_id = clean_text(entry.get("talemetry_job_id") or entry.get("id"))
+        title = clean_text(entry.get("title"))
+        source_url = _entry_source_url(entry)
+        if not internal_id or not title or not source_url or internal_id in seen_ids:
+            continue
+        seen_ids.add(internal_id)
+
+        location = _entry_location_text(entry.get("location") or {})
+        raw_context = clean_text(
+            " ".join(
+                value
+                for value in [
+                    title,
+                    f"Talemetry Job ID: {internal_id}",
+                    f"Location: {location}" if location else "",
+                ]
+                if value
+            )
+        )
+        summary = {
+            "title": title,
+            "source_url": source_url,
+            "location": location,
+            "department": "",
+            "posted_date": "",
+            "posted_date_iso": "",
+            "raw_context": raw_context,
+            "mta_job_id": internal_id,
+            "mta_internal_id": internal_id,
+            "mta_careers_url": source_url,
+            "requisition_id": internal_id,
+        }
+        summaries.append(_build_mta_job(summary, agency) if normalize else summary)
+
+    return summaries
+
+
+def _blocked_listing_error(page_url: str, status_code: int) -> RuntimeError:
+    return RuntimeError(
+        f"MTA careers JSON listing returned {status_code} for {page_url}. "
+        "The request was blocked before parsing; on GitHub-hosted Actions this usually means "
+        "Cloudflare rejected the runner IP or TLS fingerprint."
+    )
+
+
+def _scrape_careers_json_summaries(session, agency: dict) -> list[dict]:
     summaries_by_id = {}
+    total_entries = None
 
     for page in range(1, MAX_PAGES + 1):
-        page_url = _careers_page_url(page)
-        response = session.get(page_url, timeout=REQUEST_TIMEOUT)
+        page_url = _careers_json_url(page)
+        response = session.get(page_url, timeout=REQUEST_TIMEOUT, headers=JSON_HEADERS)
         if getattr(response, "status_code", 200) == 403:
-            raise RuntimeError(f"MTA careers listing returned 403 for {page_url}")
+            raise _blocked_listing_error(page_url, response.status_code)
         response.raise_for_status()
 
-        final_url = str(getattr(response, "url", page_url) or page_url)
-        page_summaries = _parse_careers_search_page(response.text, agency, final_url, normalize=False)
-        print(f"MTA careers listing page={page} jobs_found={len(page_summaries)}")
+        try:
+            payload = response.json()
+        except ValueError as exc:
+            raise RuntimeError(f"MTA careers JSON listing was not valid JSON for {page_url}") from exc
+
+        total_entries = payload.get("total_entries", total_entries)
+        page_summaries = _parse_careers_search_json(payload, agency, normalize=False)
+        print(
+            f"MTA careers JSON listing page={page} jobs_found={len(page_summaries)}"
+            + (f" total_entries={total_entries}" if total_entries is not None else "")
+        )
         if not page_summaries:
             break
 
         for summary in page_summaries:
-            summaries_by_id[summary["mta_job_id"]] = summary
+            summaries_by_id[summary["mta_internal_id"]] = summary
 
-        if len(page_summaries) < PER_PAGE:
+        if len(page_summaries) < PER_PAGE or (total_entries and len(summaries_by_id) >= int(total_entries)):
             break
 
         time.sleep(LISTING_DELAY)
 
     return list(summaries_by_id.values())
+
+
+def _scrape_careers_summaries(agency: dict) -> list[dict]:
+    last_blocked_error = None
+
+    for impersonate in FALLBACK_IMPERSONATES:
+        session = _new_careers_session(impersonate)
+        try:
+            summaries = _scrape_careers_json_summaries(session, agency)
+        except RuntimeError as exc:
+            if "MTA careers JSON listing returned 403" not in str(exc):
+                raise
+            last_blocked_error = exc
+            print(f"MTA careers JSON listing blocked with curl_cffi impersonate={impersonate}; trying fallback.")
+            continue
+
+        _set_active_impersonate(impersonate)
+        if impersonate != CURL_IMPERSONATE:
+            print(f"MTA careers JSON listing succeeded with curl_cffi impersonate={impersonate}.")
+        return summaries
+
+    if last_blocked_error:
+        raise last_blocked_error
+    return []
 
 
 def _canonical_detail_label(label: str) -> str:
@@ -304,7 +460,7 @@ def _clean_compensation_section(text: str) -> str:
 
 def _location_to_city_state(location: str, agency: dict) -> tuple[str, str]:
     city = agency["city"]
-    state = agency["state"]
+    state = "NY"
     location = clean_text(location)
 
     if not location:
@@ -314,14 +470,56 @@ def _location_to_city_state(location: str, agency: dict) -> tuple[str, str]:
     parts = [part.strip() for part in re.split(r",|\n", location) if part.strip()]
     if parts:
         city = parts[0]
-    if len(parts) > 1:
-        state_candidate = parts[-1].upper()
-        if re.fullmatch(r"[A-Z]{2}", state_candidate):
-            state = state_candidate
-        elif state_candidate not in {"UNITED STATES", "USA"}:
-            state = parts[-1]
+    for part in reversed(parts):
+        state_candidate = clean_text(part).upper()
+        if state_candidate in MTA_NY_LOCALITIES:
+            city = clean_text(part).title()
+            state = "NY"
+            break
 
-    return city, state
+        state_name_zip = re.match(r"^(NEW YORK|NEW JERSEY|CONNECTICUT|DISTRICT OF COLUMBIA)(?:\s+\d{5}(?:-\d{4})?)?$", state_candidate)
+        if state_name_zip:
+            if len(parts) == 1 and state_name_zip.group(1) == "NEW YORK":
+                city = "New York"
+            state = STATE_NAME_TO_ABBR[state_name_zip.group(1)]
+            break
+
+        city_state_name = re.match(
+            r"^(.+?)\s+(NEW YORK|NEW JERSEY|CONNECTICUT|DISTRICT OF COLUMBIA)(?:\s+\d{5}(?:-\d{4})?)?$",
+            state_candidate,
+        )
+        if city_state_name:
+            city = clean_text(city_state_name.group(1)).title()
+            state = STATE_NAME_TO_ABBR[city_state_name.group(2)]
+            break
+
+        state_zip = re.match(r"^([A-Z]{2})(?:\s+\d{5}(?:-\d{4})?)?$", state_candidate)
+        if state_zip:
+            state = state_zip.group(1)
+            break
+
+        city_state = re.match(r"^(.+?)\s+([A-Z]{2})(?:\s+\d{5}(?:-\d{4})?)?$", state_candidate)
+        if city_state:
+            city = clean_text(city_state.group(1)).title()
+            state = city_state.group(2)
+            break
+
+        if re.fullmatch(r"\d{5}(?:-\d{4})?", state_candidate):
+            if len(parts) == 1:
+                city = agency["city"]
+            state = agency["state"]
+            break
+
+        if state_candidate in STATE_NAME_TO_ABBR:
+            state = STATE_NAME_TO_ABBR[state_candidate]
+            break
+        elif re.fullmatch(r"[A-Z]{2}", state_candidate):
+            state = state_candidate
+            break
+
+    # MTA is grouped under New York in the product, even when detail text contains
+    # boroughs, zip codes, or legacy location fragments in the state slot.
+    return city, "NY"
 
 
 def _split_label_value(text: str) -> tuple[str, str]:
@@ -425,16 +623,87 @@ def _salary_from_detail(fields: dict, text: str) -> str:
     return ""
 
 
+def _json_ld_jobposting(soup: BeautifulSoup) -> dict:
+    for script in soup.find_all("script", type="application/ld+json"):
+        raw = script.string or script.get_text()
+        if not raw:
+            continue
+        raw = raw.replace(r"\$", "$")
+        try:
+            payload = json.loads(raw)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(payload, dict) and payload.get("@type") == "JobPosting":
+            return payload
+    return {}
+
+
+def _json_ld_description_text(jobposting: dict) -> str:
+    description_html = jobposting.get("description")
+    if not description_html:
+        return ""
+    return _detail_text(BeautifulSoup(description_html, "lxml"))
+
+
+def _json_ld_location(jobposting: dict) -> str:
+    location = jobposting.get("jobLocation")
+    if isinstance(location, list):
+        location = location[0] if location else {}
+    if not isinstance(location, dict):
+        return ""
+
+    address = location.get("address")
+    if not isinstance(address, dict):
+        return ""
+
+    region = clean_text(address.get("addressRegion"))
+    region = STATE_ABBREVIATIONS.get(region, region)
+    return clean_text(
+        ", ".join(
+            value
+            for value in [address.get("addressLocality"), region, address.get("addressCountry")]
+            if clean_text(value)
+        )
+    )
+
+
+def _json_ld_identifier(jobposting: dict) -> str:
+    identifier = jobposting.get("identifier")
+    if isinstance(identifier, dict):
+        return clean_text(identifier.get("value"))
+    return clean_text(identifier)
+
+
 def _parse_detail_page(html: str) -> dict:
     soup = BeautifulSoup(html, "lxml")
     container = soup.select_one("main") or soup.select_one("article") or soup
+    jobposting = _json_ld_jobposting(soup)
     meaningful_text = _detail_text(container)
-    fields = _supplement_detail_fields_from_text(_extract_detail_table_fields(container), meaningful_text)
-    salary_text = _salary_from_detail(fields, meaningful_text)
+    structured_text = _json_ld_description_text(jobposting)
+    combined_text = "\n".join(text for text in [meaningful_text, structured_text] if text)
+    fields = _supplement_detail_fields_from_text(_extract_detail_table_fields(container), combined_text)
+
+    job_id = _json_ld_identifier(jobposting)
+    if job_id and not fields.get("mta_job_id"):
+        fields["mta_job_id"] = job_id
+
+    posted_date = clean_text(jobposting.get("datePosted"))
+    if posted_date and not fields.get("posted_date"):
+        fields["posted_date"] = posted_date
+
+    valid_through = clean_text(jobposting.get("validThrough"))
+    if valid_through and not fields.get("closing_date"):
+        fields["closing_date"] = valid_through
+
+    structured_location = _json_ld_location(jobposting)
+    if structured_location and not fields.get("detail_location"):
+        fields["detail_location"] = structured_location
+
+    salary_text = _salary_from_detail(fields, combined_text)
 
     details = {
-        "all_meaningful_info": meaningful_text,
-        "full_job_description": meaningful_text,
+        "all_meaningful_info": combined_text,
+        "full_job_description": combined_text,
         "salary_text": salary_text,
         "detail_location": fields.get("detail_location", ""),
         "business_unit": fields.get("business_unit", ""),
@@ -522,7 +791,7 @@ def _fetch_detail(source_url: str) -> dict:
     if DETAIL_DELAY:
         time.sleep(DETAIL_DELAY)
     try:
-        response = _thread_session().get(source_url, timeout=REQUEST_TIMEOUT)
+        response = _thread_session().get(source_url, timeout=REQUEST_TIMEOUT, headers=DETAIL_HEADERS)
         response.raise_for_status()
     except Exception:
         return {}
@@ -538,6 +807,8 @@ def _build_mta_job(summary: dict, agency: dict, details: Optional[dict] = None) 
     raw_context = clean_text(
         " ".join(value for value in [summary.get("raw_context", ""), details.get("all_meaningful_info", "")] if value)
     )
+    posted_date = details.get("posted_date") or summary.get("posted_date", "")
+    posted_date_iso = summary.get("posted_date_iso") or _parse_mta_date(posted_date)
 
     extra_fields = {
         key: value
@@ -546,7 +817,7 @@ def _build_mta_job(summary: dict, agency: dict, details: Optional[dict] = None) 
             "department": details.get("department") or summary.get("department", ""),
             "mta_careers_url": summary.get("mta_careers_url") or summary.get("source_url", ""),
             "mta_job_id": details.get("mta_job_id") or summary.get("mta_job_id", ""),
-            "posted_date_iso": summary.get("posted_date_iso", ""),
+            "posted_date_iso": posted_date_iso,
             "requisition_id": details.get("requisition_id") or summary.get("requisition_id") or summary.get("mta_job_id", ""),
         }.items()
         if value and key not in {"salary_text", "full_job_description", "all_meaningful_info", "detail_location"}
@@ -560,7 +831,7 @@ def _build_mta_job(summary: dict, agency: dict, details: Optional[dict] = None) 
         source_url=summary["source_url"],
         platform=agency["platform"],
         salary_text=details.get("salary_text", ""),
-        posted_date=details.get("posted_date") or summary.get("posted_date", ""),
+        posted_date=posted_date,
         closing_date=details.get("closing_date", ""),
         description=description,
         raw_context=raw_context,

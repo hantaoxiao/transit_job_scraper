@@ -24,6 +24,25 @@ CAREERS_LISTING_HTML = """
 </main>
 """
 
+CAREERS_JSON = {
+    "current_page": 1,
+    "per_page": 100,
+    "total_entries": 1,
+    "entries": [
+        {
+            "id": "17750642",
+            "talemetry_job_id": "17750642",
+            "permalink": "senior-director-project-management-various",
+            "title": "Senior Director Project Management (Various)",
+            "location": {
+                "locality": "New York",
+                "region_abbr": "NY",
+                "country": "United States",
+            },
+        }
+    ],
+}
+
 DETAIL_HTML = """
 <main>
   <article>
@@ -41,6 +60,35 @@ DETAIL_HTML = """
     </tbody></table>
     <p><strong>Summary</strong></p>
     <p>The Director Project Management is responsible for capital project delivery.</p>
+  </article>
+</main>
+"""
+
+JSON_LD_DETAIL_HTML = """
+<main>
+  <article>
+    <h1>Senior Director Project Management (Various)</h1>
+    <script type="application/ld+json">
+      {
+        "@context": "http://schema.org/",
+        "@type": "JobPosting",
+        "title": "Senior Director Project Management (Various)",
+        "description": "<p>JOB TITLE: Senior Director, Project Management</p><p>AGENCY: Construction &amp; Development</p><p>SALARY RANGE: $149,247 to $186,559</p><p>DEADLINE: Open Until Filled</p>",
+        "identifier": {"@type": "PropertyValue", "name": "MTA Careers Site", "value": "15861"},
+        "datePosted": "2026-05-18",
+        "validThrough": "",
+        "jobLocation": {
+          "@type": "Place",
+          "address": {
+            "@type": "PostalAddress",
+            "streetAddress": "2 Broadway",
+            "addressLocality": "New York",
+            "addressRegion": "New York",
+            "addressCountry": "United States"
+          }
+        }
+      }
+    </script>
   </article>
 </main>
 """
@@ -72,6 +120,18 @@ class MtaCareersTests(unittest.TestCase):
             "https://careers.mta.org/jobs/17601285-director-project-management",
         )
 
+    def test_parse_careers_json_listing_uses_ci_safe_feed(self):
+        summaries = mta_custom._parse_careers_search_json(CAREERS_JSON, AGENCY)
+
+        self.assertEqual(len(summaries), 1)
+        self.assertEqual(summaries[0]["mta_internal_id"], "17750642")
+        self.assertEqual(summaries[0]["title"], "Senior Director Project Management (Various)")
+        self.assertEqual(summaries[0]["location"], "New York, NY, United States")
+        self.assertEqual(
+            summaries[0]["source_url"],
+            "https://careers.mta.org/jobs/17750642-senior-director-project-management-various",
+        )
+
     def test_parse_careers_detail_repairs_split_mta_salary(self):
         details = mta_custom._parse_detail_page(DETAIL_HTML)
 
@@ -79,6 +139,57 @@ class MtaCareersTests(unittest.TestCase):
         self.assertEqual(details["business_unit"], "Construction & Development")
         self.assertEqual(details["department"], "Delivery/Stations")
         self.assertEqual(details["closing_date"], "Open Until Filled")
+
+    def test_parse_careers_detail_uses_json_ld_posted_date_and_identifier(self):
+        details = mta_custom._parse_detail_page(JSON_LD_DETAIL_HTML)
+
+        self.assertEqual(details["mta_job_id"], "15861")
+        self.assertEqual(details["requisition_id"], "15861")
+        self.assertEqual(details["posted_date"], "2026-05-18")
+        self.assertEqual(details["detail_location"], "New York, NY, United States")
+        self.assertEqual(details["salary_text"], "$149,247 to $186,559")
+
+    def test_location_parser_strips_zip_from_state(self):
+        city, state = mta_custom._location_to_city_state("New York, NY 10004, United States", AGENCY)
+
+        self.assertEqual(city, "New York")
+        self.assertEqual(state, "NY")
+
+    def test_location_parser_handles_state_name_with_zip(self):
+        city, state = mta_custom._location_to_city_state("Queens, New York 11377, United States", AGENCY)
+
+        self.assertEqual(city, "Queens")
+        self.assertEqual(state, "NY")
+
+    def test_location_parser_handles_city_state_without_comma(self):
+        city, state = mta_custom._location_to_city_state("East New York - 25 Jamaica Ave, Brooklyn NY", AGENCY)
+
+        self.assertEqual(city, "Brooklyn")
+        self.assertEqual(state, "NY")
+
+    def test_location_parser_handles_city_state_zip_without_comma(self):
+        city, state = mta_custom._location_to_city_state("130 Livingston Street, 7 th Floor, Brooklyn NY 11201", AGENCY)
+
+        self.assertEqual(city, "Brooklyn")
+        self.assertEqual(state, "NY")
+
+    def test_location_parser_handles_borough_locality_as_new_york(self):
+        city, state = mta_custom._location_to_city_state("2 Broadway, Manhattan", AGENCY)
+
+        self.assertEqual(city, "Manhattan")
+        self.assertEqual(state, "NY")
+
+    def test_location_parser_handles_bare_zip_as_agency_state(self):
+        city, state = mta_custom._location_to_city_state("10001", AGENCY)
+
+        self.assertEqual(city, "New York")
+        self.assertEqual(state, "NY")
+
+    def test_location_parser_forces_all_mta_rows_to_new_york_state(self):
+        city, state = mta_custom._location_to_city_state("Newark, NJ, United States", AGENCY)
+
+        self.assertEqual(city, "Newark")
+        self.assertEqual(state, "NY")
 
     def test_careers_detail_preserves_hourly_salary_context(self):
         salary = mta_custom._salary_from_detail({}, HOURLY_DETAIL_TEXT)
