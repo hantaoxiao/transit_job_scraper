@@ -3,8 +3,10 @@ name: Scrape and deploy transit jobs
 on:
   workflow_dispatch:
   schedule:
-    # GitHub cron uses UTC. This is 7 AM-7 PM Eastern during daylight saving time.
+    # GitHub cron uses UTC. Weekdays run every 2 hours from 7 AM-7 PM Eastern during daylight saving time.
     - cron: "17 11-23/2 * * 1-5"
+    # Weekends run every 6 hours Eastern during daylight saving time.
+    - cron: "17 4,10,16,22 * * 0,6"
 
 concurrency:
   group: transit-job-refresh
