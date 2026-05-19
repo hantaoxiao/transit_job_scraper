@@ -4,7 +4,7 @@ AGENCIES = [
         "city": "New York",
         "state": "NY",
         "platform": "mta_custom",
-        "jobs_url": "https://careers.mta.org/",
+        "jobs_url": "https://careers.mta.org/search/jobs/in",
     },
     {
         "agency": "LA Metro",

@@ -133,7 +133,7 @@ FAILED_AGENCY_CACHE_MIN = _env_int("SCRAPER_FAILED_AGENCY_CACHE_MIN", 1)
 PARTIAL_AGENCY_CACHE_MIN = _env_int("SCRAPER_PARTIAL_AGENCY_CACHE_MIN", 50)
 SERIAL_PLATFORMS = {"mta_custom"}
 RISKY_PLATFORM_TIMEOUTS = {
-    "mta_custom": _env_int("MTA_SCRAPER_TIMEOUT", 600),
+    "mta_custom": _env_int("MTA_SCRAPER_TIMEOUT", 300),
     "peoplesoft_miami": 90,
     "via_custom": 45,
     "applicantpro": 60,
@@ -621,7 +621,7 @@ def run_all_scrapers() -> list[dict]:
                 _record_scrape_result(result, all_jobs, scrape_results)
 
     if serial_agencies:
-        print(f"Scraping {len(serial_agencies)} serial browser/custom agencies in isolated workers", flush=True)
+        print(f"Scraping {len(serial_agencies)} serial isolated agencies", flush=True)
         for agency in serial_agencies:
             result = _scrape_agency_isolated(agency)
             _record_scrape_result(result, all_jobs, scrape_results)
