@@ -232,6 +232,12 @@
     currency: "USD",
     maximumFractionDigits: 0,
   });
+  const stateNameToAbbr = {
+    "CONNECTICUT": "CT",
+    "DISTRICT OF COLUMBIA": "DC",
+    "NEW JERSEY": "NJ",
+    "NEW YORK": "NY",
+  };
 
   function truthy(value) {
     return value === true || value === "True" || value === "true" || value === 1 || value === "1";
@@ -249,15 +255,25 @@
     return Number.isNaN(date.getTime()) ? 0 : date.getTime();
   }
 
-  function stateCode(value) {
-    const text = String(value || "").trim().toUpperCase();
+  function stateCode(value, job = {}) {
+    if (job.agency === "MTA") return "NY";
+
+    const text = String(value || "").trim().toUpperCase().replace(/\s+/g, " ");
     if (!text) return "";
+
+    if (stateNameToAbbr[text]) return stateNameToAbbr[text];
+
+    const stateNameZip = text.match(/^(NEW YORK|NEW JERSEY|CONNECTICUT|DISTRICT OF COLUMBIA)(?:\s+\d{5}(?:-\d{4})?)?$/);
+    if (stateNameZip) return stateNameToAbbr[stateNameZip[1]];
 
     const stateZip = text.match(/^([A-Z]{2})(?:\s+\d{5}(?:-\d{4})?)?$/);
     if (stateZip) return stateZip[1];
 
     const embeddedState = text.match(/\b([A-Z]{2})\s+\d{5}(?:-\d{4})?\b/);
     if (embeddedState) return embeddedState[1];
+
+    const cityState = text.match(/^.+?\s+([A-Z]{2})(?:\s+\d{5}(?:-\d{4})?)?$/);
+    if (cityState) return cityState[1];
 
     return text;
   }
@@ -533,7 +549,7 @@
     return (
       (excluded.has("query") || !filters.query || matchesSearch(job, filters.query)) &&
       (excluded.has("agency") || !filters.agency || job.agency === filters.agency) &&
-      (excluded.has("state") || !filters.state || stateCode(job.state) === filters.state) &&
+      (excluded.has("state") || !filters.state || stateCode(job.state, job) === filters.state) &&
       (excluded.has("category") || !filters.category || job.category === filters.category) &&
       (excluded.has("seniority") || !filters.seniority || job.ai_sort_seniority === filters.seniority) &&
       (excluded.has("employmentType") || !filters.employmentType || employmentTypeBucket(job) === filters.employmentType) &&
@@ -568,7 +584,7 @@
     const agencyOptions = optionValuesFor("agency", (job) => job.agency);
     changed = replaceOptions(els.agencyFilter, agencyOptions.values, "All agencies", agencyOptions.counts) || changed;
 
-    const stateOptions = optionValuesFor("state", (job) => stateCode(job.state));
+    const stateOptions = optionValuesFor("state", (job) => stateCode(job.state, job));
     changed = replaceOptions(els.stateFilter, stateOptions.values, "All states", stateOptions.counts) || changed;
 
     const categoryOptions = optionValuesFor("category", (job) => job.category);

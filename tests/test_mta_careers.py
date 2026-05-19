@@ -155,6 +155,42 @@ class MtaCareersTests(unittest.TestCase):
         self.assertEqual(city, "New York")
         self.assertEqual(state, "NY")
 
+    def test_location_parser_handles_state_name_with_zip(self):
+        city, state = mta_custom._location_to_city_state("Queens, New York 11377, United States", AGENCY)
+
+        self.assertEqual(city, "Queens")
+        self.assertEqual(state, "NY")
+
+    def test_location_parser_handles_city_state_without_comma(self):
+        city, state = mta_custom._location_to_city_state("East New York - 25 Jamaica Ave, Brooklyn NY", AGENCY)
+
+        self.assertEqual(city, "Brooklyn")
+        self.assertEqual(state, "NY")
+
+    def test_location_parser_handles_city_state_zip_without_comma(self):
+        city, state = mta_custom._location_to_city_state("130 Livingston Street, 7 th Floor, Brooklyn NY 11201", AGENCY)
+
+        self.assertEqual(city, "Brooklyn")
+        self.assertEqual(state, "NY")
+
+    def test_location_parser_handles_borough_locality_as_new_york(self):
+        city, state = mta_custom._location_to_city_state("2 Broadway, Manhattan", AGENCY)
+
+        self.assertEqual(city, "Manhattan")
+        self.assertEqual(state, "NY")
+
+    def test_location_parser_handles_bare_zip_as_agency_state(self):
+        city, state = mta_custom._location_to_city_state("10001", AGENCY)
+
+        self.assertEqual(city, "New York")
+        self.assertEqual(state, "NY")
+
+    def test_location_parser_forces_all_mta_rows_to_new_york_state(self):
+        city, state = mta_custom._location_to_city_state("Newark, NJ, United States", AGENCY)
+
+        self.assertEqual(city, "Newark")
+        self.assertEqual(state, "NY")
+
     def test_careers_detail_preserves_hourly_salary_context(self):
         salary = mta_custom._salary_from_detail({}, HOURLY_DETAIL_TEXT)
 

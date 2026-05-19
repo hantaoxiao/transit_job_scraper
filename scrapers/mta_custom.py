@@ -127,6 +127,18 @@ STATE_ABBREVIATIONS = {
     "New York": "NY",
 }
 STATE_NAME_TO_ABBR = {key.upper(): value for key, value in STATE_ABBREVIATIONS.items()}
+MTA_NY_LOCALITIES = {
+    "BRONX",
+    "BROOKLYN",
+    "FLUSHING",
+    "HOLLIS",
+    "JAMAICA",
+    "MANHATTAN",
+    "NEW YORK",
+    "QUEENS",
+    "STATEN ISLAND",
+    "WOODSIDE",
+}
 
 _ACTIVE_IMPERSONATE = FALLBACK_IMPERSONATES[0] if FALLBACK_IMPERSONATES else CURL_IMPERSONATE
 
@@ -448,7 +460,7 @@ def _clean_compensation_section(text: str) -> str:
 
 def _location_to_city_state(location: str, agency: dict) -> tuple[str, str]:
     city = agency["city"]
-    state = agency["state"]
+    state = "NY"
     location = clean_text(location)
 
     if not location:
@@ -458,19 +470,56 @@ def _location_to_city_state(location: str, agency: dict) -> tuple[str, str]:
     parts = [part.strip() for part in re.split(r",|\n", location) if part.strip()]
     if parts:
         city = parts[0]
-    if len(parts) > 1:
-        state_candidate = parts[-1].upper()
+    for part in reversed(parts):
+        state_candidate = clean_text(part).upper()
+        if state_candidate in MTA_NY_LOCALITIES:
+            city = clean_text(part).title()
+            state = "NY"
+            break
+
+        state_name_zip = re.match(r"^(NEW YORK|NEW JERSEY|CONNECTICUT|DISTRICT OF COLUMBIA)(?:\s+\d{5}(?:-\d{4})?)?$", state_candidate)
+        if state_name_zip:
+            if len(parts) == 1 and state_name_zip.group(1) == "NEW YORK":
+                city = "New York"
+            state = STATE_NAME_TO_ABBR[state_name_zip.group(1)]
+            break
+
+        city_state_name = re.match(
+            r"^(.+?)\s+(NEW YORK|NEW JERSEY|CONNECTICUT|DISTRICT OF COLUMBIA)(?:\s+\d{5}(?:-\d{4})?)?$",
+            state_candidate,
+        )
+        if city_state_name:
+            city = clean_text(city_state_name.group(1)).title()
+            state = STATE_NAME_TO_ABBR[city_state_name.group(2)]
+            break
+
         state_zip = re.match(r"^([A-Z]{2})(?:\s+\d{5}(?:-\d{4})?)?$", state_candidate)
         if state_zip:
             state = state_zip.group(1)
-        elif state_candidate in STATE_NAME_TO_ABBR:
+            break
+
+        city_state = re.match(r"^(.+?)\s+([A-Z]{2})(?:\s+\d{5}(?:-\d{4})?)?$", state_candidate)
+        if city_state:
+            city = clean_text(city_state.group(1)).title()
+            state = city_state.group(2)
+            break
+
+        if re.fullmatch(r"\d{5}(?:-\d{4})?", state_candidate):
+            if len(parts) == 1:
+                city = agency["city"]
+            state = agency["state"]
+            break
+
+        if state_candidate in STATE_NAME_TO_ABBR:
             state = STATE_NAME_TO_ABBR[state_candidate]
+            break
         elif re.fullmatch(r"[A-Z]{2}", state_candidate):
             state = state_candidate
-        elif state_candidate not in {"UNITED STATES", "USA"}:
-            state = parts[-1]
+            break
 
-    return city, state
+    # MTA is grouped under New York in the product, even when detail text contains
+    # boroughs, zip codes, or legacy location fragments in the state slot.
+    return city, "NY"
 
 
 def _split_label_value(text: str) -> tuple[str, str]:
