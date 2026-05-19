@@ -24,6 +24,25 @@ CAREERS_LISTING_HTML = """
 </main>
 """
 
+CAREERS_JSON = {
+    "current_page": 1,
+    "per_page": 100,
+    "total_entries": 1,
+    "entries": [
+        {
+            "id": "17750642",
+            "talemetry_job_id": "17750642",
+            "permalink": "senior-director-project-management-various",
+            "title": "Senior Director Project Management (Various)",
+            "location": {
+                "locality": "New York",
+                "region_abbr": "NY",
+                "country": "United States",
+            },
+        }
+    ],
+}
+
 DETAIL_HTML = """
 <main>
   <article>
@@ -41,6 +60,35 @@ DETAIL_HTML = """
     </tbody></table>
     <p><strong>Summary</strong></p>
     <p>The Director Project Management is responsible for capital project delivery.</p>
+  </article>
+</main>
+"""
+
+JSON_LD_DETAIL_HTML = """
+<main>
+  <article>
+    <h1>Senior Director Project Management (Various)</h1>
+    <script type="application/ld+json">
+      {
+        "@context": "http://schema.org/",
+        "@type": "JobPosting",
+        "title": "Senior Director Project Management (Various)",
+        "description": "<p>JOB TITLE: Senior Director, Project Management</p><p>AGENCY: Construction &amp; Development</p><p>SALARY RANGE: $149,247 to $186,559</p><p>DEADLINE: Open Until Filled</p>",
+        "identifier": {"@type": "PropertyValue", "name": "MTA Careers Site", "value": "15861"},
+        "datePosted": "2026-05-18",
+        "validThrough": "",
+        "jobLocation": {
+          "@type": "Place",
+          "address": {
+            "@type": "PostalAddress",
+            "streetAddress": "2 Broadway",
+            "addressLocality": "New York",
+            "addressRegion": "New York",
+            "addressCountry": "United States"
+          }
+        }
+      }
+    </script>
   </article>
 </main>
 """
@@ -72,6 +120,18 @@ class MtaCareersTests(unittest.TestCase):
             "https://careers.mta.org/jobs/17601285-director-project-management",
         )
 
+    def test_parse_careers_json_listing_uses_ci_safe_feed(self):
+        summaries = mta_custom._parse_careers_search_json(CAREERS_JSON, AGENCY)
+
+        self.assertEqual(len(summaries), 1)
+        self.assertEqual(summaries[0]["mta_internal_id"], "17750642")
+        self.assertEqual(summaries[0]["title"], "Senior Director Project Management (Various)")
+        self.assertEqual(summaries[0]["location"], "New York, NY, United States")
+        self.assertEqual(
+            summaries[0]["source_url"],
+            "https://careers.mta.org/jobs/17750642-senior-director-project-management-various",
+        )
+
     def test_parse_careers_detail_repairs_split_mta_salary(self):
         details = mta_custom._parse_detail_page(DETAIL_HTML)
 
@@ -79,6 +139,15 @@ class MtaCareersTests(unittest.TestCase):
         self.assertEqual(details["business_unit"], "Construction & Development")
         self.assertEqual(details["department"], "Delivery/Stations")
         self.assertEqual(details["closing_date"], "Open Until Filled")
+
+    def test_parse_careers_detail_uses_json_ld_posted_date_and_identifier(self):
+        details = mta_custom._parse_detail_page(JSON_LD_DETAIL_HTML)
+
+        self.assertEqual(details["mta_job_id"], "15861")
+        self.assertEqual(details["requisition_id"], "15861")
+        self.assertEqual(details["posted_date"], "2026-05-18")
+        self.assertEqual(details["detail_location"], "New York, NY, United States")
+        self.assertEqual(details["salary_text"], "$149,247 to $186,559")
 
     def test_careers_detail_preserves_hourly_salary_context(self):
         salary = mta_custom._salary_from_detail({}, HOURLY_DETAIL_TEXT)
