@@ -17,7 +17,7 @@ permissions:
 
 jobs:
   scrape-and-deploy:
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     timeout-minutes: 75
 
     environment:
@@ -41,11 +41,11 @@ jobs:
       SCRAPER_PARTIAL_CACHE_AGENCIES: "MTA"
       SCRAPER_AGENCY_MIN_TOTAL_RATIO: "0.75"
       SCRAPER_PRESERVE_AGENCY_CACHE_ON_ZERO: "1"
-      MTA_SCRAPER_TIMEOUT: "300"
+      MTA_SCRAPER_TIMEOUT: "900"
       MTA_CAREERS_PER_PAGE: "100"
       MTA_CAREERS_MAX_PAGES: "20"
       MTA_CAREERS_DELAY: "0.25"
-      MTA_DETAIL_WORKERS: "8"
+      MTA_DETAIL_WORKERS: "12"
       MTA_REQUEST_TIMEOUT: "30"
       MTA_DETAIL_DELAY: "0"
       WORKDAY_DETAIL_WORKERS: "8"
@@ -69,8 +69,13 @@ jobs:
       - name: Install Python dependencies
         run: pip install -r requirements.txt
 
-      - name: Install browser dependencies
+      - name: Install browser dependencies on Linux
+        if: runner.os == 'Linux'
         run: python -m playwright install --with-deps chromium
+
+      - name: Install browser dependencies on non-Linux
+        if: runner.os != 'Linux'
+        run: python -m playwright install chromium
 
       - name: Run regression tests
         run: python -m unittest discover -s tests

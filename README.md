@@ -226,7 +226,7 @@ San Diego MTS is currently marked with `skip_scrape_reason` because its ADP rend
 
 The repository includes `.github/workflows/scrape-and-deploy.yml` for GitHub Pages. It can be run manually from the Actions tab and is scheduled for every 2 hours on weekdays from 7 AM through 7 PM Eastern time.
 
-The workflow installs dependencies, installs Playwright Chromium, runs `python main.py` from a clean checkout with scrape detail caching disabled, uploads the latest CSV as a short-lived artifact, and deploys the generated `site/` folder to GitHub Pages. Enable Pages with source set to GitHub Actions in the repository settings before relying on the scheduled deployment.
+The workflow is configured for a `self-hosted` GitHub Actions runner so MTA requests come from a normal residential or office network instead of GitHub-hosted datacenter IPs. It installs dependencies, installs Playwright Chromium, runs `python main.py` from a clean checkout with scrape detail caching disabled, uploads the latest CSV as a short-lived artifact, and deploys the generated `site/` folder to GitHub Pages. Enable Pages with source set to GitHub Actions in the repository settings before relying on the scheduled deployment.
 
 In CI, MTA uses the current careers site with `curl_cffi` Chrome impersonation, reads listing pages with `per_page=100`, and enriches salary/detail fields from each live detail page without Playwright or Jobvite.
 
