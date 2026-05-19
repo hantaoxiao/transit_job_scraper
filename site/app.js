@@ -278,6 +278,21 @@
     return date.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
   }
 
+  function formatDateTime(value) {
+    if (!value) return "";
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return formatDate(value);
+    return date.toLocaleString(undefined, {
+      month: "short",
+      day: "numeric",
+      year: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+      timeZoneName: "short",
+    });
+  }
+
   function conciseDate(value) {
     const text = String(value || "").trim();
     if (!text) return "";
@@ -296,7 +311,7 @@
 
   function setHeader() {
     els.totalJobs.textContent = jobs.length.toLocaleString();
-    els.generatedAt.textContent = payload.generated_at ? `Updated ${formatDate(payload.generated_at)}` : "Updated locally";
+    els.generatedAt.textContent = payload.generated_at ? `Updated ${formatDateTime(payload.generated_at)}` : "Updated locally";
   }
 
   function comparableAnnual(job) {

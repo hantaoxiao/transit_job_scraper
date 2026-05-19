@@ -356,7 +356,7 @@ AGENCIES = [
         "city": "Jersey City",
         "state": "NJ",
         "platform": "panynj_custom",
-        "jobs_url": "https://www.jointheportauthority.com/jobs/search",
+        "jobs_url": "https://www.jointheportauthority.com/jobs/search?per_page=100",
     },
     {
         "agency": "Caltrain",
