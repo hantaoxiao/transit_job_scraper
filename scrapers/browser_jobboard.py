@@ -9,6 +9,11 @@ import requests
 from bs4 import BeautifulSoup
 
 try:
+    from curl_cffi import requests as curl_requests
+except ImportError:
+    curl_requests = None
+
+try:
     from playwright.sync_api import Error as PlaywrightError
     from playwright.sync_api import sync_playwright
 except ImportError:
@@ -45,6 +50,13 @@ JINA_DETAIL_WORKERS = _env_int("JINA_DETAIL_WORKERS", 8)
 CDTA_DETAIL_WORKERS = _env_int("CDTA_DETAIL_WORKERS", 6)
 NFTA_DETAIL_WORKERS = _env_int("NFTA_DETAIL_WORKERS", 8)
 STATIC_DETAIL_WORKERS = _env_int("STATIC_DETAIL_WORKERS", 4)
+CURL_IMPERSONATES = tuple(
+    dict.fromkeys(
+        value.strip()
+        for value in os.getenv("BROWSER_JOBBOARD_CURL_IMPERSONATES", "chrome124,safari17_0").split(",")
+        if value.strip()
+    )
+)
 
 
 def _sync_playwright():
@@ -154,6 +166,26 @@ def _jina_markdown(url: str) -> str:
     return best
 
 
+def _browser_fingerprint_html(url: str, timeout: int = 45) -> str:
+    if curl_requests is None:
+        return ""
+
+    for impersonate in CURL_IMPERSONATES:
+        try:
+            session = curl_requests.Session(impersonate=impersonate)
+            response = session.get(url, headers=HEADERS, timeout=timeout)
+            response.raise_for_status()
+        except Exception:
+            continue
+
+        text = response.text or ""
+        if "Just a moment" in text and "challenge" in text.lower():
+            continue
+        if len(text) > 1000:
+            return text
+    return ""
+
+
 def _markdown_to_text(markdown: str) -> str:
     text = re.sub(r"!\[[^\]]*\]\([^)]+\)", " ", markdown)
     text = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", text)
@@ -163,6 +195,27 @@ def _markdown_to_text(markdown: str) -> str:
 def _markdown_label_value(block: str, label: str) -> str:
     match = re.search(rf"(?im)^\s*{re.escape(label)}:\s*(.+?)\s*$", block)
     return clean_text(match.group(1)) if match else ""
+
+
+def _lines_label_value(lines: list[str], label: str, stop_labels: set[str]) -> str:
+    label_key = label.lower().rstrip(":")
+    stop_keys = {stop_label.lower().rstrip(":") for stop_label in stop_labels}
+
+    for index, line in enumerate(lines):
+        normalized = line.lower().rstrip(":")
+        if normalized == label_key:
+            values = []
+            for value in lines[index + 1 :]:
+                value_key = value.lower().rstrip(":")
+                if value_key in stop_keys or any(value.lower().startswith(f"{stop}:") for stop in stop_keys):
+                    break
+                values.append(value)
+            return clean_text(" ".join(values))
+
+        if line.lower().startswith(f"{label_key}:"):
+            return clean_text(line.split(":", 1)[1])
+
+    return ""
 
 
 def _city_state_from_location(location: str, agency: dict) -> tuple[str, str]:
@@ -1331,8 +1384,51 @@ def _miami_salary(text: str) -> str:
     return clean_text(f"{fmt(match.group(1))} {unit}")
 
 
-def scrape_uta_custom(agency: dict) -> list[dict]:
-    markdown = _jina_markdown(agency["jobs_url"])
+def _parse_uta_listing_html(html: str, agency: dict) -> list[dict]:
+    soup = BeautifulSoup(html, "lxml")
+    entries = []
+    seen_urls = set()
+    stop_labels = {"Job ID", "Location", "Date posted", "View Job"}
+
+    for card in soup.select(".jobs-section__item"):
+        anchor = card.find("a", href=lambda href: href and "/jobs/" in href and "/search/jobs" not in href)
+        if not anchor:
+            continue
+
+        source_url = urljoin(agency["jobs_url"], anchor["href"])
+        if source_url in seen_urls:
+            continue
+        seen_urls.add(source_url)
+
+        lines = [clean_text(line) for line in card.get_text("\n", strip=True).splitlines()]
+        lines = [line for line in lines if line]
+        job_id = _lines_label_value(lines, "Job ID", stop_labels)
+        title = clean_text(anchor.get_text(" ", strip=True))
+        if not job_id or not title:
+            continue
+
+        location = _lines_label_value(lines, "Location", stop_labels)
+        posted_date = _lines_label_value(lines, "Date posted", stop_labels)
+        city, state = _city_state_from_location(location, agency)
+        cached = cached_job(agency["agency"], source_url=source_url, requisition_id=job_id, title=title)
+        entries.append(
+            {
+                "title": title,
+                "source_url": source_url,
+                "job_id": job_id,
+                "location": location,
+                "city": city,
+                "state": state,
+                "block": clean_text(" ".join(lines)),
+                "posted_date": posted_date,
+                "cached": cached,
+            }
+        )
+
+    return entries
+
+
+def _parse_uta_listing_markdown(markdown: str, agency: dict) -> list[dict]:
     entries = []
     seen_urls = set()
     blocks = re.split(r"\nJob ID:\s*", markdown)
@@ -1347,7 +1443,7 @@ def scrape_uta_custom(agency: dict) -> list[dict]:
         seen_urls.add(source_url)
 
         location_match = re.search(r"Location:\s+([^\n]+)", block)
-        posted_match = re.search(r"Date posted\s+([0-9.]+)", block)
+        posted_match = re.search(r"Date posted\s+([0-9]{1,2}\.[0-9]{1,2}\.[0-9]{2,4})", block)
         location = clean_text(location_match.group(1) if location_match else "")
         city, state = _city_state_from_location(location, agency)
         cached = cached_job(agency["agency"], source_url=source_url, requisition_id=job_id, title=title)
@@ -1364,6 +1460,18 @@ def scrape_uta_custom(agency: dict) -> list[dict]:
                 "cached": cached,
             }
         )
+
+    return entries
+
+
+def scrape_uta_custom(agency: dict) -> list[dict]:
+    html = _browser_fingerprint_html(agency["jobs_url"])
+    entries = _parse_uta_listing_html(html, agency) if html else []
+    if not entries:
+        markdown = _jina_markdown(agency["jobs_url"])
+        entries = _parse_uta_listing_markdown(markdown, agency)
+    if not entries:
+        raise RuntimeError("UTA listing returned no parsable jobs")
 
     detail_markdowns = {}
     pending = [entry for entry in entries if not has_cached_detail(entry["cached"])]
@@ -1724,9 +1832,59 @@ def _parse_panynj_listing_markdown(markdown: str, agency: dict) -> list[dict]:
     return entries
 
 
+def _parse_panynj_listing_html(html: str, agency: dict) -> list[dict]:
+    soup = BeautifulSoup(html, "lxml")
+    entries = []
+    seen_urls = set()
+    stop_labels = {"Job Title", "Job ID", "Job Family", "Department", "Location"}
+
+    for card in soup.select(".jobs__list-item"):
+        anchor = card.find("a", href=lambda href: href and "/jobs/" in href)
+        if not anchor:
+            continue
+
+        source_url = urljoin(agency["jobs_url"], anchor["href"])
+        if source_url in seen_urls:
+            continue
+        seen_urls.add(source_url)
+
+        title = clean_text(anchor.get_text(" ", strip=True))
+        lines = [clean_text(line) for line in card.get_text("\n", strip=True).splitlines()]
+        lines = [line for line in lines if line]
+        job_id = _lines_label_value(lines, "Job ID", stop_labels)
+        if not title or not job_id:
+            continue
+
+        family = _lines_label_value(lines, "Job Family", stop_labels)
+        department = _lines_label_value(lines, "Department", stop_labels)
+        location = _lines_label_value(lines, "Location", stop_labels)
+        city, state = _city_state_from_location(location, agency)
+        cached = cached_job(agency["agency"], source_url=source_url, requisition_id=job_id, title=title)
+        entries.append(
+            {
+                "title": title,
+                "source_url": source_url,
+                "job_id": job_id,
+                "family": family,
+                "department": department,
+                "location": location,
+                "city": city,
+                "state": state,
+                "cached": cached,
+            }
+        )
+
+    return entries
+
+
 def scrape_panynj_custom(agency: dict) -> list[dict]:
-    markdown = _jina_markdown(agency["jobs_url"])
-    entries = _parse_panynj_listing_markdown(markdown, agency)
+    html = _browser_fingerprint_html(agency["jobs_url"])
+    entries = _parse_panynj_listing_html(html, agency) if html else []
+    if not entries:
+        markdown = _jina_markdown(agency["jobs_url"])
+        entries = _parse_panynj_listing_markdown(markdown, agency)
+    if not entries:
+        raise RuntimeError("PATH listing returned no parsable jobs")
 
     detail_markdowns = {}
     pending = [entry for entry in entries if not has_cached_detail(entry["cached"])]

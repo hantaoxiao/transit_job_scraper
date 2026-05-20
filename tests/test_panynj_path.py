@@ -26,6 +26,27 @@ Job Family: Operations
 
 
 class PanynjPathTests(unittest.TestCase):
+    def test_path_html_parser_uses_direct_listing_with_titles(self):
+        html = """
+        <div class="jobs__list-item">
+          <div>Job Title: <a href="https://www.jointheportauthority.com/jobs/17760772-benefits">Benefits Operations and Systems Supervisor</a></div>
+          <div>Job ID:</div><div>64397</div>
+          <div>Job Family:</div><div>Corporate</div>
+          <div>Department:</div><div>Human Resources</div>
+          <div>Location:</div><div>New York,</div><div>NY</div>
+        </div>
+        """
+
+        entries = browser_jobboard._parse_panynj_listing_html(html, AGENCY)
+
+        self.assertEqual(len(entries), 1)
+        self.assertEqual(entries[0]["title"], "Benefits Operations and Systems Supervisor")
+        self.assertEqual(entries[0]["job_id"], "64397")
+        self.assertEqual(entries[0]["family"], "Corporate")
+        self.assertEqual(entries[0]["department"], "Human Resources")
+        self.assertEqual(entries[0]["city"], "New York")
+        self.assertEqual(entries[0]["state"], "NY")
+
     def test_path_parser_collects_all_21_listing_blocks(self):
         markdown = "\n".join(_path_block(index) for index in range(1, 22))
 

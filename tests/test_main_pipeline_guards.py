@@ -72,6 +72,31 @@ class MainPipelineGuardTests(unittest.TestCase):
 
         self.assertEqual(int((merged["agency"] == "MTA").sum()), 6)
 
+    def test_preserves_partial_path_and_uta_cache_by_default(self):
+        current = pd.DataFrame(
+            [
+                {"job_id": "path-live-1", "agency": "PATH"},
+                {"job_id": "uta-live-1", "agency": "Utah Transit Authority"},
+            ]
+        )
+        previous = pd.DataFrame(
+            [{"job_id": f"path-{index}", "agency": "PATH"} for index in range(4)]
+            + [{"job_id": f"uta-{index}", "agency": "Utah Transit Authority"} for index in range(4)]
+        )
+
+        with patch.dict(
+            os.environ,
+            {
+                "SCRAPER_PARTIAL_AGENCY_CACHE_MIN": "1",
+                "SCRAPER_AGENCY_MIN_TOTAL_RATIO": "0.75",
+            },
+            clear=False,
+        ):
+            merged = main._preserve_partial_agency_cache(current, previous)
+
+        self.assertEqual(int((merged["agency"] == "PATH").sum()), 5)
+        self.assertEqual(int((merged["agency"] == "Utah Transit Authority").sum()), 5)
+
     def test_dedupe_prefers_cached_row_with_salary_details(self):
         rows = pd.DataFrame(
             [
