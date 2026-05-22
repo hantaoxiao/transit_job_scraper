@@ -287,7 +287,7 @@ def _preserve_failed_agency_cache(
 
 
 def _partial_cache_agencies() -> set[str]:
-    raw = os.getenv("SCRAPER_PARTIAL_CACHE_AGENCIES", "MTA")
+    raw = os.getenv("SCRAPER_PARTIAL_CACHE_AGENCIES", "MTA,PATH,Utah Transit Authority")
     return {agency.strip() for agency in raw.split(",") if agency.strip()}
 
 
