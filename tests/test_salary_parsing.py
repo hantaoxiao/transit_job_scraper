@@ -1,6 +1,6 @@
 import unittest
 
-from normalizer import extract_salary, normalize_job, parse_salary, repair_split_money
+from normalizer import extract_salary, normalize_job, parse_salary, repair_split_money, salary_search_context
 from scrapers.mta_custom import _clean_compensation_section, _extract_labeled_section
 
 
@@ -82,6 +82,20 @@ class SalaryParsingTests(unittest.TestCase):
 
         self.assertFalse(job["salary_is_listed"])
         self.assertEqual(job["salary_unit"], "unknown")
+
+    def test_salary_search_context_keeps_relevant_window_from_long_description(self):
+        text = (
+            "Overview "
+            + ("general responsibilities " * 600)
+            + "Compensation: Minimum: $100,256 Midpoint: $130,318 Maximum: $160,394 "
+            + ("benefits and qualifications " * 600)
+        )
+
+        context = salary_search_context(text, max_length=2000)
+
+        self.assertLess(len(context), len(text))
+        self.assertIn("Minimum: $100,256", context)
+        self.assertEqual(parse_salary(extract_salary(context))["salary_range_display"], "$100,256 - $160,394")
 
     def test_mta_compensation_section_stops_before_description_headings(self):
         salary = _clean_compensation_section(

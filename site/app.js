@@ -255,6 +255,41 @@
     return Number.isNaN(date.getTime()) ? 0 : date.getTime();
   }
 
+  function generatedAtValue() {
+    const generated = new Date(payload.generated_at || "");
+    return Number.isNaN(generated.getTime()) ? Date.now() : generated.getTime();
+  }
+
+  function relativePostedDateValue(value) {
+    const text = String(value || "").trim().toLowerCase();
+    if (!text) return 0;
+
+    const base = generatedAtValue();
+    const dayMs = 24 * 60 * 60 * 1000;
+
+    if (/\btoday\b/.test(text)) return base;
+    if (/\byesterday\b/.test(text)) return base - dayMs;
+
+    const relative = text.match(/(?:posted\s+)?(?:(more than|over)\s+)?(\d+|30\+)\s+(day|week|month|year)s?\s+ago/);
+    if (!relative) return 0;
+
+    const amount = relative[2] === "30+" ? 30 : Number(relative[2]);
+    if (!Number.isFinite(amount)) return 0;
+
+    const multipliers = {
+      day: 1,
+      week: 7,
+      month: 30,
+      year: 365,
+    };
+    const extraDay = relative[1] ? 1 : 0;
+    return base - ((amount * multipliers[relative[3]]) + extraDay) * dayMs;
+  }
+
+  function postedDateValue(job) {
+    return dateValue(job.posted_date_iso) || dateValue(job.posted_date) || relativePostedDateValue(job.posted_date);
+  }
+
   function stateCode(value, job = {}) {
     if (job.agency === "MTA") return "NY";
 
@@ -642,11 +677,11 @@
         const title = textCompare(a, b, "title");
         if (title) return title;
       } else {
-        const diff = dateValue(b.posted_date) - dateValue(a.posted_date);
+        const diff = postedDateValue(b) - postedDateValue(a);
         if (diff) return diff;
       }
 
-      return textCompare(a, b, "title") || textCompare(a, b, "agency");
+      return textCompare(a, b, "agency") || textCompare(a, b, "title");
     });
 
     return sorted;

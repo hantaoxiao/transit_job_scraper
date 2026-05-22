@@ -77,6 +77,43 @@ def make_job_id(agency: str, title: str, source_url: str) -> str:
     return hashlib.md5(raw.encode("utf-8")).hexdigest()
 
 
+def salary_search_context(text: Optional[str], max_length: int = 6000, window: int = 700) -> str:
+    text = clean_text(text)
+    if len(text) <= max_length:
+        return text
+
+    matches = list(
+        re.finditer(
+            r"\$|\bsalary\b|\bcompensation\b|\bpay\b|\bwage\b|\bhourly\b|\brate\b|\bminimum\b|\bmaximum\b",
+            text,
+            flags=re.IGNORECASE,
+        )
+    )
+    if not matches:
+        return text[:max_length]
+
+    ranges = []
+    for match in matches[:20]:
+        start = max(0, match.start() - window)
+        end = min(len(text), match.end() + window)
+        if ranges and start <= ranges[-1][1]:
+            ranges[-1] = (ranges[-1][0], max(ranges[-1][1], end))
+        else:
+            ranges.append((start, end))
+
+    snippets = []
+    used = 0
+    for start, end in ranges:
+        snippet = text[start:end]
+        remaining = max_length - used
+        if remaining <= 0:
+            break
+        snippets.append(snippet[:remaining])
+        used += len(snippets[-1])
+
+    return clean_text(" ".join(snippets)) or text[:max_length]
+
+
 def extract_salary(text: Optional[str]) -> str:
     text = repair_split_money(text)
     if not text:
@@ -583,7 +620,7 @@ def normalize_job(
     if _looks_like_non_salary_money(salary_text, salary_context):
         salary_text = ""
     if not salary_has_money(salary_text):
-        salary_text = extract_salary(salary_context) or salary_text
+        salary_text = extract_salary(salary_search_context(salary_context)) or salary_text
     salary_fields = parse_salary(salary_text)
     category_text = raw_context or description
     category = category or classify_category(title, category_text)
