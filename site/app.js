@@ -767,6 +767,7 @@
 
   function renderJob(job) {
     const location = agencyLocation(job.agency) || [job.city, job.state].filter(Boolean).join(", ");
+    const sourceUrl = safeExternalUrl(job.source_url);
     const dates = [
       job.posted_date ? `Posted ${formatDate(job.posted_date)}` : "",
       job.closing_date ? `Closes ${formatDate(job.closing_date)}` : "",
@@ -780,7 +781,7 @@
             ${location ? `<span>${escapeHtml(location)}</span>` : ""}
           </div>
           <h3 class="job-title">
-            <a href="${escapeAttribute(job.source_url)}" target="_blank" rel="noreferrer">${escapeHtml(job.title)}</a>
+            <a href="${escapeAttribute(sourceUrl)}" target="_blank" rel="noopener noreferrer">${escapeHtml(job.title)}</a>
           </h3>
           <div class="job-tags">
             <span class="tag">${escapeHtml(job.category || "Other")}</span>
@@ -907,7 +908,7 @@
           </div>
         </div>
         <div class="map-group-jobs">
-          ${group.examples.map((job) => `<a href="${escapeAttribute(job.source_url)}" target="_blank" rel="noreferrer">${escapeHtml(job.title)}</a>`).join("")}
+          ${group.examples.map((job) => `<a href="${escapeAttribute(safeExternalUrl(job.source_url))}" target="_blank" rel="noopener noreferrer">${escapeHtml(job.title)}</a>`).join("")}
         </div>
       </article>
     `;
@@ -973,6 +974,15 @@
 
   function escapeAttribute(value) {
     return escapeHtml(value).replaceAll("`", "&#096;");
+  }
+
+  function safeExternalUrl(value) {
+    try {
+      const url = new URL(String(value || ""), window.location.href);
+      return ["http:", "https:"].includes(url.protocol) ? url.href : "#";
+    } catch {
+      return "#";
+    }
   }
 
   function bind() {
