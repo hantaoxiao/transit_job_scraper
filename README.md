@@ -229,6 +229,8 @@ The workflow is configured for a `self-hosted` GitHub Actions runner so MTA requ
 
 In CI, MTA uses `MTA_TRANSPORT=browser` to read listings and details in the same persistent browser session. Locally, `auto` tries HTTP first and switches to the browser if the listings are blocked or unrecognized. `MTA_TRANSPORT=http` disables that fallback. The browser uses installed Google Chrome when available, otherwise Playwright Chromium. It opens a visible window on macOS/Windows or Linux with a display; set `MTA_BROWSER_HEADLESS=1` for a displayless run. It never copies cookies into curl requests or sends parallel curl requests after obtaining browser access.
 
+MTA is temporarily skipped in normal refreshes while its browser scraper is being debugged, using `skip_scrape_reason` in `agencies.py`. Existing cache-preservation rules still apply. The explicit `python tools/check_agencies.py MTA --mta-browser` command bypasses this MTA-only skip for debugging without enabling it in regular runs. Remove the MTA `skip_scrape_reason` entry when ready to resume refreshes.
+
 The dedicated profile defaults to `~/.cache/transit-job-scraper/mta-browser`, outside the checkout, so `actions/checkout` cannot remove it. Manual checks and Actions must run as the same OS account to share it, or set `MTA_BROWSER_PROFILE` to the same directory in both. A profile cannot be used concurrently by two browsers. Cloudflare can still require human verification; in that case use a visible browser on the runner's desktop, complete verification there, and rerun with the same profile. This is not a guarantee that Cloudflare permits unattended automation.
 
 To try the browser path directly:

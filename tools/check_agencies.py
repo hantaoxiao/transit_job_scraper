@@ -14,7 +14,7 @@ from main import _scrape_agency
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("agencies", nargs="+", help='Agency names, e.g. MBTA WMATA MTA or "LA Metro"')
-    parser.add_argument("--mta-browser", action="store_true", help="Use the persistent browser directly for MTA")
+    parser.add_argument("--mta-browser", action="store_true", help="Debug MTA in the persistent browser, even when regular MTA refreshes are disabled")
     args = parser.parse_args()
     if args.mta_browser:
         os.environ["MTA_TRANSPORT"] = "browser"
@@ -24,7 +24,9 @@ def main() -> int:
         parser.error("Unknown agencies: " + ", ".join(unknown))
     failed = False
     for name in args.agencies:
-        agency = configured[name.casefold()]
+        agency = dict(configured[name.casefold()])
+        if args.mta_browser and agency["agency"] == "MTA":
+            agency.pop("skip_scrape_reason", None)
         print(f"Checking {agency['agency']} ({agency['platform']}): {agency['jobs_url']}", flush=True)
         result = _scrape_agency(agency)
         if result["error"]:
