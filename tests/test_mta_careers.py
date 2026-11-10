@@ -308,7 +308,9 @@ class MtaCareersTests(unittest.TestCase):
             "The current minimum salary for Senior Stationary Engineer is $87.71 per hour",
         )
 
-    def test_scrape_mta_uses_careers_listing_and_detail_only(self):
+    @patch.dict("os.environ", {"MTA_TRANSPORT": "http"})
+    @patch("scrapers.mta_browser.scrape_mta_browser", side_effect=AssertionError("The HTTP unit test must not launch a browser"))
+    def test_scrape_mta_uses_careers_listing_and_detail_only(self, browser_scraper):
         detail = mta_custom._parse_detail_page(DETAIL_HTML)
         summary = mta_custom._parse_careers_search_page(
             CAREERS_LISTING_HTML,
@@ -323,6 +325,7 @@ class MtaCareersTests(unittest.TestCase):
                         jobs = mta_custom.scrape_mta(AGENCY)
 
         self.assertEqual(len(jobs), 1)
+        browser_scraper.assert_not_called()
         fetch_detail.assert_called_once_with("https://careers.mta.org/jobs/17601285-director-project-management")
         job = jobs[0]
         self.assertEqual(job["source_url"], "https://careers.mta.org/jobs/17601285-director-project-management")
