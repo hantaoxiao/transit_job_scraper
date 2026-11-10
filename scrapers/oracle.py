@@ -112,6 +112,23 @@ def _location_from_detail(detail: dict, fallback: str) -> str:
     return clean_text(fallback)
 
 
+def _city_state(location: str, agency: dict) -> tuple[str, str]:
+    parts = [clean_text(part) for part in location.split(",") if clean_text(part)]
+    if not parts:
+        return agency["city"], agency["state"]
+    state_names = {
+        "district of columbia": "DC",
+        "maryland": "MD",
+        "virginia": "VA",
+    }
+    for part in parts[1:]:
+        if part.lower() in state_names:
+            return parts[0], state_names[part.lower()]
+        if len(part) == 2 and part.isupper():
+            return parts[0], part
+    return parts[0], agency["state"]
+
+
 def scrape_oracle(agency: dict) -> list[dict]:
     base, site = _parse_oracle_url(agency["jobs_url"])
     session = requests.Session()
@@ -185,7 +202,7 @@ def scrape_oracle(agency: dict) -> list[dict]:
             or listing.get("Location")
             or cached_location,
         )
-        city = location.split(",")[0].strip() if location else cached.get("city") or agency["city"]
+        city, state = _city_state(location, agency)
         description = _strip_html(
             detail.get("ExternalDescriptionStr")
             or detail.get("ExternalResponsibilitiesStr")
@@ -228,7 +245,7 @@ def scrape_oracle(agency: dict) -> list[dict]:
                 title=title,
                 agency=agency["agency"],
                 city=city or agency["city"],
-                state=agency["state"],
+                state=state,
                 source_url=entry["source_url"],
                 platform=agency["platform"],
                 salary_text=salary_text,

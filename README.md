@@ -155,16 +155,15 @@ The California expansion uses the 2024 agency workbook as the source list and ad
 Implemented platform scrapers:
 
 - `governmentjobs` - GovernmentJobs / NEOGOV endpoint and detail pages
-- `mta_custom` - MTA careers site through non-browser `curl_cffi` Chrome impersonation
+- `mta_custom` - MTA careers HTTP listings with persistent-browser fallback for browser challenges
 - `taleo` - Taleo jobboard API, used for CTA
 - `taleo_v2` - Rendered Taleo v2 boards, used for PSTA
 - `successfactors` - SEPTA
 - `workday` - Workday and newer `myworkdaysite.com/recruiting/...` paths, including OCTA
-- `oracle` - Oracle Cloud HCM candidate sites
+- `oracle` - Oracle Cloud HCM candidate sites, including WMATA's current CX_2011 board
 - `ukg` - UKG / UltiPro job boards
 - `salesforce_custom` - NJ Transit Salesforce career site
 - `sf_careers` - SFMTA / City and County of San Francisco careers
-- `peoplesoft_wmata` - WMATA PeopleSoft listings
 - `jobs2web` - Jobs2Web / SAP-style boards, used for Houston METRO
 - `panynj_custom` - Port Authority/PATH text-rendered listings and detail pages
 - `cadient` - Cadient boards, used for Metra
@@ -228,7 +227,25 @@ The repository includes `.github/workflows/scrape-and-deploy.yml` for GitHub Pag
 
 The workflow is configured for a `self-hosted` GitHub Actions runner so MTA requests come from a normal residential or office network instead of GitHub-hosted datacenter IPs. It installs dependencies, installs Playwright Chromium, runs `python main.py` from a clean checkout with scrape detail caching disabled, uploads the latest CSV as a short-lived artifact, and deploys the generated `site/` folder to GitHub Pages. Enable Pages with source set to GitHub Actions in the repository settings before relying on the scheduled deployment.
 
-In CI, MTA uses the current careers site with `curl_cffi` Chrome impersonation, reads listing pages with `per_page=100`, and enriches salary/detail fields from each live detail page without Playwright or Jobvite.
+In CI, MTA uses `MTA_TRANSPORT=browser` to read listings and details in the same persistent browser session. Locally, `auto` tries HTTP first and switches to the browser if the listings are blocked or unrecognized. `MTA_TRANSPORT=http` disables that fallback. The browser uses installed Google Chrome when available, otherwise Playwright Chromium. It opens a visible window on macOS/Windows or Linux with a display; set `MTA_BROWSER_HEADLESS=1` for a displayless run. It never copies cookies into curl requests or sends parallel curl requests after obtaining browser access.
+
+The dedicated profile defaults to `~/.cache/transit-job-scraper/mta-browser`, outside the checkout, so `actions/checkout` cannot remove it. Manual checks and Actions must run as the same OS account to share it, or set `MTA_BROWSER_PROFILE` to the same directory in both. A profile cannot be used concurrently by two browsers. Cloudflare can still require human verification; in that case use a visible browser on the runner's desktop, complete verification there, and rerun with the same profile. This is not a guarantee that Cloudflare permits unattended automation.
+
+To try the browser path directly:
+
+```bash
+python tools/check_agencies.py MTA --mta-browser
+```
+
+`MTA_BROWSER_WAIT_SECONDS` bounds the wait for rendered content/verification (default 60 seconds). `MTA_BROWSER_DETAIL_WORKERS` bounds detail tabs (default 3). Listings follow the site's advertised result count and fail on repeated, incomplete or truncated pages. A browser challenge is never treated as zero jobs or a successful detail response.
+
+To check just the affected boards without overwriting the CSV or website data:
+
+```bash
+python tools/check_agencies.py MBTA WMATA MTA
+```
+
+This prints counts and sample official job links, and exits unsuccessfully if a selected agency fails or returns zero jobs. Run it on the Actions runner for a meaningful connectivity check. MBTA uses the `mbtama` GovernmentJobs board; WMATA uses the Oracle board linked from its official careers page.
 
 GovernmentJobs agencies are listing-first for scheduled runs. The listing endpoint already includes salary, schedule, department/category hints, posted/closing text, and a description preview, so the scraper avoids opening every detail page unless `GOVJOBS_FETCH_DETAILS=1` is explicitly set.
 
