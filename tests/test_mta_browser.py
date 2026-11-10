@@ -12,11 +12,15 @@ AGENCY = {"agency": "MTA", "city": "New York", "state": "NY", "platform": "mta_c
           "jobs_url": "https://careers.mta.org/search/jobs"}
 
 
+def job_card(number):
+    return f'''<div class="jobs-section__item"><h2><a href="/jobs/1800000{number}-analyst">Schedule Analyst {number}</a></h2>
+    <div>1700{number}</div><div>New York, NY</div><div>Operations Planning</div>
+    <div>Date Posted: Nov 9, 2026</div></div>'''
+
+
 def listing(number=1, total=1):
     next_link = f'<a rel="next" href="/search/jobs/in?page={number + 1}#">Next</a>' if number < total else ""
-    return f'''<main><div class="jobs-section__item"><h2><a href="/jobs/1800000{number}-analyst">Schedule Analyst {number}</a></h2>
-    <div>1700{number}</div><div>New York, NY</div><div>Operations Planning</div>
-    <div>Date Posted: Nov 9, 2026</div></div>Showing {number}-{number} of {total} results{next_link}</main>'''
+    return f'<main>{job_card(number)}Showing {number}-{number} of {total} results{next_link}</main>'
 
 
 DETAIL = '''<main><article><h1>Schedule Analyst</h1><table>
@@ -95,7 +99,7 @@ class MtaBrowserTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaisesRegex(mta_custom.MtaListingUnavailable, "still requires browser verification"):
                 await mta_browser._read_page(browser_page, mta_custom.SEARCH_URL, listing=True, agency=AGENCY)
 
-    async def test_complete_browser_pagination_ignores_configured_http_page_size(self):
+    async def test_browser_pagination_keeps_requested_page_size(self):
         first = listing(1, 2)
         second = listing(2, 2)
         results = [(first, mta_custom._parse_careers_search_page(first, AGENCY, mta_custom.SEARCH_URL)),
@@ -104,7 +108,19 @@ class MtaBrowserTests(unittest.IsolatedAsyncioTestCase):
             with patch.object(mta_custom, "LISTING_DELAY", 0):
                 jobs = await mta_browser._listings(Mock(), AGENCY)
         self.assertEqual(len(jobs), 2)
-        self.assertEqual(read.call_args_list[1].args[1], "https://careers.mta.org/search/jobs/in?page=2")
+        self.assertEqual(read.call_args_list[0].args[1], "https://careers.mta.org/search/jobs?per_page=100")
+        self.assertEqual(read.call_args_list[1].args[1], "https://careers.mta.org/search/jobs/in?page=2&per_page=100")
+
+    async def test_hundred_job_page_and_short_last_page_are_collected_completely(self):
+        first = '<main>' + ''.join(job_card(i) for i in range(1, 101)) + 'Showing 1-100 of 105 results<a rel="next" href="/search/jobs/in?page=2&per_page=25#">2</a></main>'
+        second = '<main>' + ''.join(job_card(i) for i in range(101, 106)) + 'Showing 101-105 of 105 results</main>'
+        results = [(html, mta_custom._parse_careers_search_page(html, AGENCY, mta_custom.SEARCH_URL)) for html in (first, second)]
+        with patch.object(mta_browser, "_read_page", new=AsyncMock(side_effect=results)) as read:
+            with patch.object(mta_custom, "LISTING_DELAY", 0), patch.object(mta_custom, "PER_PAGE", 100):
+                jobs = await mta_browser._listings(Mock(), AGENCY)
+        self.assertEqual(len(jobs), 105)
+        self.assertEqual(read.await_count, 2)
+        self.assertEqual(read.call_args_list[1].args[1], "https://careers.mta.org/search/jobs/in?page=2&per_page=100")
 
     async def test_browser_does_not_invent_a_next_page_when_link_is_missing(self):
         html = listing(1, 2).split('<a rel="next"')[0]

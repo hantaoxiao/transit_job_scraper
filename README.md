@@ -237,7 +237,7 @@ To try the browser path directly:
 python tools/check_agencies.py MTA --mta-browser
 ```
 
-`MTA_BROWSER_WAIT_SECONDS` bounds the wait for rendered content/verification (default 60 seconds). `MTA_BROWSER_DETAIL_WORKERS` bounds detail tabs (default 3). Listings follow the site's advertised result count and fail on repeated, incomplete or truncated pages. A browser challenge is never treated as zero jobs or a successful detail response.
+`MTA_BROWSER_WAIT_SECONDS` bounds the wait for rendered content/verification (default 60 seconds). `MTA_BROWSER_DETAIL_WORKERS` bounds detail tabs (default 3). The browser requests 100 jobs per page by default (`MTA_CAREERS_PER_PAGE`) and retains that setting on every next-page link; 322 jobs therefore require four listing pages instead of thirteen. Listings follow the site's advertised result count and fail on repeated, incomplete or truncated pages. A browser challenge is never treated as zero jobs or a successful detail response.
 
 To check just the affected boards without overwriting the CSV or website data:
 

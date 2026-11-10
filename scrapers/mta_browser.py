@@ -7,7 +7,7 @@ import re
 import shutil
 import sys
 import time
-from urllib.parse import urljoin, urlparse
+from urllib.parse import parse_qsl, urlencode, urljoin, urlparse
 
 from bs4 import BeautifulSoup
 
@@ -99,7 +99,7 @@ async def _read_page(page, url: str, *, listing: bool, agency: dict):
 
 async def _listings(page, agency: dict) -> list[dict]:
     by_url = {}
-    page_url = mta.SEARCH_URL
+    page_url = f"{mta.SEARCH_URL}?{urlencode({'per_page': mta.PER_PAGE})}"
     for number in range(1, mta.MAX_PAGES + 1):
         html, summaries = await _read_page(page, page_url, listing=True, agency=agency)
         if not summaries:
@@ -128,7 +128,9 @@ async def _listings(page, agency: dict) -> list[dict]:
         next_url = urlparse(urljoin(page_url, next_link["href"]))
         if next_url.scheme != "https" or next_url.netloc != urlparse(mta.BASE_URL).netloc or not next_url.path.startswith("/search/"):
             raise mta.MtaListingUnavailable("MTA browser listing has an unexpected next-page destination")
-        page_url = next_url._replace(fragment="").geturl()
+        query = [(key, value) for key, value in parse_qsl(next_url.query, keep_blank_values=True) if key != "per_page"]
+        query.append(("per_page", str(mta.PER_PAGE)))
+        page_url = next_url._replace(query=urlencode(query), fragment="").geturl()
         if mta.LISTING_DELAY:
             await asyncio.sleep(mta.LISTING_DELAY)
     raise mta.MtaListingUnavailable(f"MTA browser listing exceeded MTA_CAREERS_MAX_PAGES={mta.MAX_PAGES}")
