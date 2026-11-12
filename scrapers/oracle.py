@@ -1,4 +1,5 @@
 import os
+import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from urllib.parse import urlencode, urlparse
 from typing import Optional
@@ -49,7 +50,15 @@ def _strip_html(value: Optional[str]) -> str:
     return clean_text(BeautifulSoup(value, "lxml").get_text(" ", strip=True))
 
 
-def _oracle_public_url(base: str, site: str, requisition_id: str) -> str:
+def _oracle_public_url(base: str, site: str, requisition_id: str, *, site_url: str = "") -> str:
+    if site_url:
+        parsed = urlparse(site_url)
+        parts = [part for part in parsed.path.split("/") if part]
+        if "sites" in parts:
+            site_index = parts.index("sites")
+            if len(parts) > site_index + 1:
+                root = "/".join(parts[:site_index + 2])
+                return f"{parsed.scheme}://{parsed.netloc}/{root}/job/{requisition_id}"
     return f"{base}/hcmUI/CandidateExperience/en/sites/{site}/job/{requisition_id}"
 
 
@@ -112,10 +121,31 @@ def _location_from_detail(detail: dict, fallback: str) -> str:
     return clean_text(fallback)
 
 
+def _salary_from_detail(detail: dict, description: str) -> str:
+    # Keep an explicit hourly pay line separate from nearby signing bonuses
+    # and benefits before flattening the full description into one paragraph.
+    soup = BeautifulSoup(detail.get("ExternalDescriptionStr") or "", "lxml")
+    for node in soup.find_all(["p", "li"]):
+        line = clean_text(node.get_text(" ", strip=True))
+        if re.search(r"\b(bonus(?:es)?|sign[- ]?on|signing|pension|retirement|insurance|contributions?|reimbursement)\b", line, re.I):
+            continue
+        rate = re.search(
+            r"\$\s*\d[\d,.]*(?:\s*(?:[-–]|to)\s*\$?\s*\d[\d,.]*)?"
+            r"\s*(?:hourly|per\s+hour|/\s*(?:hour|hr))\b", line, re.I,
+        )
+        if rate:
+            return f"Hourly Rate: {clean_text(rate.group(0))}"
+    return extract_salary(description)
+
+
 def _city_state(location: str, agency: dict) -> tuple[str, str]:
     parts = [clean_text(part) for part in location.split(",") if clean_text(part)]
     if not parts:
         return agency["city"], agency["state"]
+    if len(parts[0]) == 2 and parts[0].isupper() and all(
+        part.lower() in {"us", "usa", "united states"} for part in parts[1:]
+    ):
+        return "Various", parts[0]
     state_names = {
         "district of columbia": "DC",
         "maryland": "MD",
@@ -131,6 +161,8 @@ def _city_state(location: str, agency: dict) -> tuple[str, str]:
 
 def scrape_oracle(agency: dict) -> list[dict]:
     base, site = _parse_oracle_url(agency["jobs_url"])
+    base = agency.get("api_base_url", base).rstrip("/")
+    site = agency.get("site_number", site)
     session = requests.Session()
     entries = []
     seen_ids = set()
@@ -153,7 +185,7 @@ def scrape_oracle(agency: dict) -> list[dict]:
             if not title or not requisition_id or requisition_id in seen_ids:
                 continue
             seen_ids.add(requisition_id)
-            source_url = _oracle_public_url(base, site, requisition_id)
+            source_url = _oracle_public_url(base, site, requisition_id, site_url=agency["jobs_url"])
 
             entries.append(
                 {
@@ -208,7 +240,7 @@ def scrape_oracle(agency: dict) -> list[dict]:
             or detail.get("ExternalResponsibilitiesStr")
             or listing.get("ExternalResponsibilitiesStr")
         ) or cached.get("description", "")
-        salary_text = extract_salary(description) if detail else cached.get("salary_text", "")
+        salary_text = _salary_from_detail(detail, description) if detail else cached.get("salary_text", "")
         posted_date = clean_text(
             detail.get("ExternalPostedStartDate")
             or detail.get("PostedDate")

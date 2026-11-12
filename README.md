@@ -160,9 +160,9 @@ Implemented platform scrapers:
 - `taleo_v2` - Rendered Taleo v2 boards, used for PSTA
 - `successfactors` - SEPTA
 - `workday` - Workday and newer `myworkdaysite.com/recruiting/...` paths, including OCTA
-- `oracle` - Oracle Cloud HCM candidate sites, including WMATA's current CX_2011 board
+- `oracle` - Oracle Cloud HCM candidate sites, including WMATA's CX_2011 board and NJ Transit's current careers board
 - `ukg` - UKG / UltiPro job boards
-- `salesforce_custom` - NJ Transit Salesforce career site
+- `salesforce_custom` - Legacy Salesforce career sites
 - `sf_careers` - SFMTA / City and County of San Francisco careers
 - `jobs2web` - Jobs2Web / SAP-style boards, used for Houston METRO
 - `panynj_custom` - Port Authority/PATH text-rendered listings and detail pages
@@ -250,6 +250,8 @@ python tools/check_agencies.py MBTA WMATA MTA
 This prints counts and sample official job links, and exits unsuccessfully if a selected agency fails or returns zero jobs. Run it on the Actions runner for a meaningful connectivity check. MBTA uses the `mbtama` GovernmentJobs board; WMATA uses the Oracle board linked from its official careers page.
 
 GovernmentJobs agencies are listing-first for scheduled runs. The listing endpoint already includes salary, schedule, department/category hints, posted/closing text, and a description preview, so the scraper avoids opening every detail page unless `GOVJOBS_FETCH_DETAILS=1` is explicitly set.
+
+NJ Transit uses the Oracle board at `https://jobs.njtransit.com/en/sites/Careers/jobs`. Its public alias `Careers` differs from the API site number `CX_1`; `api_base_url` and `site_number` in `agencies.py` match the metadata published in the board's `<base>` element. API requests use that backend while application links retain the official `jobs.njtransit.com/en/sites/Careers/job/...` format.
 
 Several detail-heavy boards, including Workday, UKG, Oracle, SuccessFactors, Jobs2Web, NJ Transit, PATH, UTA, CDTA, and NFTA, can reuse cached detail fields for unchanged current jobs during local repeat runs. The GitHub Actions workflow disables this cache so scheduled deployments are built from a fresh scrape.
 

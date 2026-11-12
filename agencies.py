@@ -25,8 +25,12 @@ AGENCIES = [
         "agency": "NJ Transit",
         "city": "Newark",
         "state": "NJ",
-        "platform": "salesforce_custom",
-        "jobs_url": "https://njtransit.my.salesforce-sites.com/",
+        "platform": "oracle",
+        "jobs_url": "https://jobs.njtransit.com/en/sites/Careers/jobs",
+        # Published by the board's <base> element: Careers is the public alias,
+        # while the API serves the external board under site number CX_1.
+        "api_base_url": "https://ibrgjb.fa.ocs.oraclecloud.com",
+        "site_number": "CX_1",
     },
     {
         "agency": "SFMTA",
