@@ -22,6 +22,13 @@ AGENCIES = [
         "jobs_url": "https://chicagotransit.taleo.net/careersection/inm/jobsearch.ftl",
     },
     {
+        "agency": "NITA",
+        "city": "Chicago",
+        "state": "IL",
+        "platform": "infor",
+        "jobs_url": "https://css-rtachicago-prd.inforcloudsuite.com/hcm/Jobs/list/JobPosting.SearchForJobsResults?csk.JobBoard=EXTERNAL&csk.HROrganization=1&menu=JobsNavigationMenu.JobSearch",
+    },
+    {
         "agency": "NJ Transit",
         "city": "Newark",
         "state": "NJ",

@@ -6,7 +6,7 @@ The core idea is simple: transit agencies use many different career platforms, s
 
 ## What It Does
 
-- Scrapes jobs from 119 U.S. public transportation agencies
+- Scrapes jobs from 120 U.S. public transportation agencies
 - Normalizes titles, agencies, `City, State` locations, categories, seniority, dates, and pay
 - Parses salary ranges into clear `salary_min`, `salary_max`, and `salary_range_display` fields
 - Preserves original salary text for source accuracy
@@ -34,6 +34,7 @@ The California expansion uses the 2024 agency workbook as the source list and ad
 - LA Metro (Los Angeles, CA)
 - CTA (Chicago, IL)
 - NJ Transit (Newark, NJ)
+- NITA — Northern Illinois Transit Authority (Chicago, IL)
 - SFMTA (San Francisco, CA)
 - WMATA (Washington, DC)
 - SEPTA (Philadelphia, PA)
@@ -161,6 +162,7 @@ Implemented platform scrapers:
 - `successfactors` - SEPTA
 - `workday` - Workday and newer `myworkdaysite.com/recruiting/...` paths, including OCTA
 - `oracle` - Oracle Cloud HCM candidate sites, including WMATA's CX_2011 board and NJ Transit's current careers board
+- `infor` - Public Infor Candidate Self-Service listing/detail feeds, used by NITA
 - `ukg` - UKG / UltiPro job boards
 - `salesforce_custom` - Legacy Salesforce career sites
 - `sf_careers` - SFMTA / City and County of San Francisco careers
@@ -252,6 +254,8 @@ This prints counts and sample official job links, and exits unsuccessfully if a 
 GovernmentJobs agencies are listing-first for scheduled runs. The listing endpoint already includes salary, schedule, department/category hints, posted/closing text, and a description preview, so the scraper avoids opening every detail page unless `GOVJOBS_FETCH_DETAILS=1` is explicitly set.
 
 NJ Transit uses the Oracle board at `https://jobs.njtransit.com/en/sites/Careers/jobs`. Its public alias `Careers` differs from the API site number `CX_1`; `api_base_url` and `site_number` in `agencies.py` match the metadata published in the board's `<base>` element. API requests use that backend while application links retain the official `jobs.njtransit.com/en/sites/Careers/job/...` format.
+
+NITA's official careers page at `https://nita.illinois.gov/careers` links to its Infor Candidate Self-Service board. The scraper reads its public `pageop=load` JSON feeds, follows the supplied next-page URLs, and collects job descriptions, salaries, posting/closing dates, locations and employment types without signing in. Application links open the corresponding public Infor job posting. Check it independently with `python tools/check_agencies.py NITA`.
 
 Several detail-heavy boards, including Workday, UKG, Oracle, SuccessFactors, Jobs2Web, NJ Transit, PATH, UTA, CDTA, and NFTA, can reuse cached detail fields for unchanged current jobs during local repeat runs. The GitHub Actions workflow disables this cache so scheduled deployments are built from a fresh scrape.
 
