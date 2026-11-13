@@ -1,5 +1,5 @@
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from scrapers import mta_custom
 
@@ -9,7 +9,7 @@ AGENCY = {
     "city": "New York",
     "state": "NY",
     "platform": "mta_custom",
-    "jobs_url": "https://careers.mta.org/search/jobs/in",
+    "jobs_url": "https://careers.mta.org/search/jobs",
 }
 
 CAREERS_LISTING_HTML = """
@@ -103,6 +103,115 @@ Operate and maintain equipment.
 
 
 class MtaCareersTests(unittest.TestCase):
+    def response(self, text="", status=200, payload=None):
+        response = Mock(status_code=status, text=text)
+        response.json.return_value = payload
+        return response
+
+    def test_blocked_json_uses_public_html_in_same_session(self):
+        session = Mock()
+        session.get.side_effect = [self.response(status=403), self.response(CAREERS_LISTING_HTML)]
+        with patch.object(mta_custom, "_new_careers_session", return_value=session):
+            with patch.object(mta_custom, "_set_active_impersonate"):
+                jobs = mta_custom._scrape_careers_summaries(AGENCY)
+        self.assertEqual(len(jobs), 1)
+        self.assertEqual(jobs[0]["requisition_id"], "15322")
+        self.assertIn("/search/jobs.json?", session.get.call_args_list[0].args[0])
+        self.assertEqual("https://careers.mta.org/search/jobs", session.get.call_args_list[1].args[0])
+        session.close.assert_called_once()
+
+    def test_html_requests_canonical_route_with_stable_default_page_size(self):
+        self.assertEqual(mta_custom._careers_page_url(1), "https://careers.mta.org/search/jobs")
+        self.assertEqual(mta_custom._careers_page_url(2), "https://careers.mta.org/search/jobs?page=2")
+
+    def test_blocked_response_includes_diagnostics_without_cookies(self):
+        response = self.response("<title>Just a moment...</title>", status=403)
+        response.headers = {
+            "server": "cloudflare", "content-type": "text/html", "cf-mitigated": "challenge",
+            "set-cookie": "private-cookie-do-not-log",
+        }
+        message = str(mta_custom._blocked_listing_error(mta_custom.SEARCH_URL, 403, response))
+        self.assertIn("server=cloudflare", message)
+        self.assertIn("cf-mitigated=challenge", message)
+        self.assertIn("page_title=Just a moment...", message)
+        self.assertNotIn("private-cookie-do-not-log", message)
+
+    def test_html_pagination_honors_actual_result_count(self):
+        second = CAREERS_LISTING_HTML.replace("15322", "15323").replace("17601285", "17601286")
+        session = Mock()
+        session.get.side_effect = [
+            self.response(CAREERS_LISTING_HTML + "Showing 1-1 of 2 results"),
+            self.response(second + "Showing 2-2 of 2 results"),
+        ]
+        with patch.object(mta_custom, "LISTING_DELAY", 0):
+            jobs = mta_custom._scrape_careers_html_summaries(session, AGENCY)
+        self.assertEqual(len(jobs), 2)
+        self.assertIn("page=2", session.get.call_args.args[0])
+
+    def test_html_parser_reads_desktop_table_without_mobile_labels(self):
+        html = '''<table><tr><td><a href="/jobs/17601285-director-project-management">Director Project Management</a></td>
+        <td>15322</td><td>New York, NY</td><td>Delivery/Stations</td><td>Date Posted: May 15, 2026</td></tr></table>'''
+        jobs = mta_custom._parse_careers_search_page(html, AGENCY, mta_custom.SEARCH_URL)
+        self.assertEqual(len(jobs), 1)
+        self.assertEqual(jobs[0]["requisition_id"], "15322")
+        self.assertEqual(jobs[0]["department"], "Delivery/Stations")
+        self.assertEqual(jobs[0]["posted_date_iso"], "2026-05-15")
+
+    def test_challenge_or_unrecognized_html_is_not_an_empty_board(self):
+        for html in ("<h1>Just a moment...</h1>", "<h1>Unexpected new layout</h1>"):
+            with self.subTest(html=html):
+                session = Mock()
+                session.get.return_value = self.response(html)
+                with self.assertRaises(mta_custom.MtaListingUnavailable):
+                    mta_custom._scrape_careers_html_summaries(session, AGENCY)
+
+    def test_both_blocked_endpoints_raise_and_try_each_session(self):
+        session = Mock()
+        session.get.return_value = self.response(status=403)
+        with patch.object(mta_custom, "_new_careers_session", return_value=session):
+            with patch.object(mta_custom, "FALLBACK_IMPERSONATES", ("chrome124", "safari17_0")):
+                with self.assertRaisesRegex(mta_custom.MtaListingUnavailable, "JSON and HTML listings were unavailable"):
+                    mta_custom._scrape_careers_summaries(AGENCY)
+        self.assertEqual(session.get.call_count, 4)
+        self.assertEqual(session.close.call_count, 2)
+
+    def test_html_pagination_cannot_silently_repeat_or_truncate(self):
+        session = Mock()
+        session.get.return_value = self.response(CAREERS_LISTING_HTML + "Showing 1-1 of 2 results")
+        with patch.object(mta_custom, "LISTING_DELAY", 0):
+            with self.assertRaisesRegex(mta_custom.MtaListingUnavailable, "repeated page"):
+                mta_custom._scrape_careers_html_summaries(session, AGENCY)
+        with patch.object(mta_custom, "MAX_PAGES", 1), patch.object(mta_custom, "LISTING_DELAY", 0):
+            with self.assertRaisesRegex(mta_custom.MtaListingUnavailable, "exceeded"):
+                mta_custom._scrape_careers_html_summaries(session, AGENCY)
+
+    def test_unexpected_json_shape_is_not_an_empty_board(self):
+        session = Mock()
+        session.get.return_value = self.response(payload={"message": "challenge"})
+        with self.assertRaises(mta_custom.MtaListingUnavailable):
+            mta_custom._scrape_careers_json_summaries(session, AGENCY)
+
+    def test_json_pagination_uses_total_even_when_page_size_is_capped(self):
+        first = {**CAREERS_JSON, "per_page": 1, "total_entries": 2}
+        second = {**first, "entries": [{**CAREERS_JSON["entries"][0], "id": "17750643", "talemetry_job_id": "17750643"}]}
+        session = Mock()
+        session.get.side_effect = [self.response(payload=first), self.response(payload=second)]
+        with patch.object(mta_custom, "LISTING_DELAY", 0):
+            jobs = mta_custom._scrape_careers_json_summaries(session, AGENCY)
+        self.assertEqual(len(jobs), 2)
+
+    def test_json_pagination_does_not_silently_return_partial_results(self):
+        session = Mock()
+        session.get.return_value = self.response(payload={**CAREERS_JSON, "total_entries": 2})
+        with patch.object(mta_custom, "MAX_PAGES", 1), patch.object(mta_custom, "LISTING_DELAY", 0):
+            with self.assertRaisesRegex(mta_custom.MtaListingUnavailable, "1/2 jobs"):
+                mta_custom._scrape_careers_json_summaries(session, AGENCY)
+
+    def test_confirmed_empty_html_board_returns_empty(self):
+        session = Mock()
+        session.get.return_value = self.response("<main>0 jobs found</main>")
+        self.assertEqual(mta_custom._scrape_careers_html_summaries(session, AGENCY), [])
+
     def test_parse_careers_listing_keeps_posted_date_metadata(self):
         summaries = mta_custom._parse_careers_search_page(
             CAREERS_LISTING_HTML,
@@ -199,7 +308,9 @@ class MtaCareersTests(unittest.TestCase):
             "The current minimum salary for Senior Stationary Engineer is $87.71 per hour",
         )
 
-    def test_scrape_mta_uses_careers_listing_and_detail_only(self):
+    @patch.dict("os.environ", {"MTA_TRANSPORT": "http"})
+    @patch("scrapers.mta_browser.scrape_mta_browser", side_effect=AssertionError("The HTTP unit test must not launch a browser"))
+    def test_scrape_mta_uses_careers_listing_and_detail_only(self, browser_scraper):
         detail = mta_custom._parse_detail_page(DETAIL_HTML)
         summary = mta_custom._parse_careers_search_page(
             CAREERS_LISTING_HTML,
@@ -214,6 +325,7 @@ class MtaCareersTests(unittest.TestCase):
                         jobs = mta_custom.scrape_mta(AGENCY)
 
         self.assertEqual(len(jobs), 1)
+        browser_scraper.assert_not_called()
         fetch_detail.assert_called_once_with("https://careers.mta.org/jobs/17601285-director-project-management")
         job = jobs[0]
         self.assertEqual(job["source_url"], "https://careers.mta.org/jobs/17601285-director-project-management")
@@ -222,8 +334,7 @@ class MtaCareersTests(unittest.TestCase):
         self.assertEqual(job["mta_job_id"], "15322")
         self.assertEqual(job["requisition_id"], "15322")
 
-    def test_no_interactive_or_external_mta_fallbacks_are_defined(self):
-        self.assertFalse(hasattr(mta_custom, "_scrape_mta_browser"))
+    def test_no_external_mta_mirror_fallback_is_defined(self):
         self.assertFalse(hasattr(mta_custom, "_scrape_mta_jina"))
 
     def test_repairs_stale_cached_director_salary_text_from_context(self):

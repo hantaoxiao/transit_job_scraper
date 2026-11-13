@@ -82,6 +82,7 @@
     "MTA": { short: "MTA", name: "Metropolitan Transportation Authority", color: "#0039a6", location: "New York, NY", logo: "assets/agency-logos/mta.svg" },
     "Napa Valley Transportation Authority": { short: "NVTA", name: "Napa Valley Transportation Authority", color: "#005eb8", location: "Napa, CA", logo: "assets/agency-logos/napa-valley-transportation-authority.png" },
     "NFTA": { short: "NFTA", name: "Niagara Frontier Transportation Authority", color: "#005eb8", location: "Buffalo, NY", logo: "assets/agency-logos/nfta.png" },
+    "NITA": { short: "NITA", name: "Northern Illinois Transit Authority", color: "#235b69", location: "Chicago, IL" },
     "NICE Bus": { short: "NICE", name: "NICE Bus", color: "#f37021", location: "Mineola, NY", logo: "assets/agency-logos/nice-bus.png" },
     "NJ Transit": { short: "NJT", name: "NJ Transit", color: "#f37021", location: "Newark, NJ", logo: "assets/agency-logos/nj-transit.png" },
     "North County Transit District": { short: "NCTD", name: "North County Transit District", color: "#005eb8", location: "Oceanside, CA", logo: "assets/agency-logos/north-county-transit-district.jpg" },

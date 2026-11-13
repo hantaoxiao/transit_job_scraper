@@ -14,6 +14,7 @@ from agencies import AGENCIES
 from scrapers.governmentjobs import scrape_governmentjobs
 from scrapers.workday import scrape_workday
 from scrapers.oracle import scrape_oracle
+from scrapers.infor import scrape_infor
 from scrapers.taleo import scrape_taleo
 from scrapers.successfactors import scrape_successfactors
 from scrapers.mta_custom import scrape_mta
@@ -50,6 +51,7 @@ SCRAPER_MAP = {
     "governmentjobs": scrape_governmentjobs,
     "workday": scrape_workday,
     "oracle": scrape_oracle,
+    "infor": scrape_infor,
     "taleo": scrape_taleo,
     "successfactors": scrape_successfactors,
     "mta_custom": scrape_mta,
@@ -96,6 +98,7 @@ PARALLEL_PLATFORMS = {
     "governmentjobs",
     "workday",
     "oracle",
+    "infor",
     "taleo",
     "successfactors",
     "ukg",

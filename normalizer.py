@@ -328,6 +328,12 @@ def _looks_like_non_salary_money(salary_text: str, context: str) -> bool:
     money_tokens = re.findall(r"\$\s*\d[\d,.]*\s*[kK]?", salary_text)
     if len(money_tokens) != 1:
         return False
+    # A separately extracted hourly pay line is not a signing bonus merely
+    # because the full description mentions a bonus near another occurrence.
+    if re.search(r"\bhourly\b|\bper\s+hour\b|/\s*(?:hr|hour)\b", salary_text, re.I) and not re.search(
+        non_salary_terms, salary_text, re.I
+    ):
+        return False
 
     pay_label_terms = (
         r"\b(salary range|pay range|starting salary|base salary|annual salary|monthly salary|"

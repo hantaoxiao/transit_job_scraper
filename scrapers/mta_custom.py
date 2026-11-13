@@ -6,7 +6,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from threading import local
 from typing import Optional
-from urllib.parse import urlencode, urljoin
+from urllib.parse import urlencode, urljoin, urlparse
 
 from bs4 import BeautifulSoup, Tag
 from curl_cffi import requests as curl_requests
@@ -16,7 +16,7 @@ from scrapers.detail_cache import cached_job, has_cached_detail
 
 
 BASE_URL = "https://careers.mta.org"
-SEARCH_URL = "https://careers.mta.org/search/jobs/in"
+SEARCH_URL = "https://careers.mta.org/search/jobs"
 SEARCH_JSON_URL = "https://careers.mta.org/search/jobs.json"
 DEFAULT_DETAIL_WORKERS = 8
 DEFAULT_PER_PAGE = 100
@@ -114,11 +114,11 @@ FALLBACK_IMPERSONATES = tuple(
 JSON_HEADERS = {
     "Accept": "application/json, text/javascript, */*; q=0.01",
     "X-Requested-With": "XMLHttpRequest",
-    "Referer": "https://careers.mta.org/search/jobs/in?page=1&per_page=100",
+    "Referer": SEARCH_URL,
 }
 DETAIL_HEADERS = {
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-    "Referer": "https://careers.mta.org/search/jobs/in?page=1&per_page=100",
+    "Referer": SEARCH_URL,
 }
 STATE_ABBREVIATIONS = {
     "Connecticut": "CT",
@@ -170,8 +170,10 @@ def _warm_up_session(session) -> None:
         return
 
 
-def _careers_page_url(page: int, per_page: int = PER_PAGE) -> str:
-    return f"{SEARCH_URL}?{urlencode({'page': page, 'per_page': per_page})}"
+def _careers_page_url(page: int) -> str:
+    # Match MTA's own All Jobs link on the first request. Keep the server's
+    # default page size stable on subsequent pages instead of assuming 100.
+    return SEARCH_URL if page == 1 else f"{SEARCH_URL}?{urlencode({'page': page})}"
 
 
 def _careers_json_url(page: int, per_page: int = PER_PAGE) -> str:
@@ -205,8 +207,14 @@ def _find_careers_job_card(anchor: Tag) -> Optional[Tag]:
         if not isinstance(parent, Tag):
             continue
         text = clean_text(parent.get_text(" ", strip=True))
+        if parent.name == "tr" and parent.find("td"):
+            return parent
         if "Job ID:" in text and "Date Posted:" in text and len(text) < 2500:
             return parent
+        if re.search(r"Date\s+Posted\s*:", text, re.I) and len(text) < 2500:
+            urls = {node["href"] for node in parent.select('a[href*="/jobs/"]')}
+            if len(urls) == 1:
+                return parent
     return None
 
 
@@ -218,7 +226,7 @@ def _parse_careers_search_page(html: str, agency: dict, page_url: str, normalize
     for anchor in soup.find_all("a", href=True):
         source_url = urljoin(page_url, anchor.get("href", ""))
         title = clean_text(anchor.get_text(" ", strip=True))
-        if "/jobs/" not in source_url or not title:
+        if urlparse(source_url).netloc != urlparse(BASE_URL).netloc or not re.match(r"/jobs/\d+", urlparse(source_url).path) or not title:
             continue
 
         card = _find_careers_job_card(anchor)
@@ -227,13 +235,31 @@ def _parse_careers_search_page(html: str, agency: dict, page_url: str, normalize
 
         card_text = clean_text(card.get_text(" ", strip=True))
         job_id = _extract_careers_field(card_text, "Job ID")
+        # The desktop listing uses five table columns; mobile labels may be
+        # supplied by CSS and are absent from get_text().
+        cells = card.find_all("td", recursive=False) if card.name == "tr" else []
+        table_values = [clean_text(cell.get_text(" ", strip=True)) for cell in cells]
+        if not job_id and len(table_values) >= 5:
+            job_id = re.sub(r"^Job ID\s*:?\s*", "", table_values[1], flags=re.I)
+        lines = [clean_text(line) for line in card.get_text("\n", strip=True).splitlines() if clean_text(line)]
+        numeric_id_index = next((index for index, line in enumerate(lines) if re.fullmatch(r"\d{3,8}", line)), None)
+        if not job_id and numeric_id_index is not None:
+            job_id = lines[numeric_id_index]
         if not job_id or job_id in seen_ids:
             continue
         seen_ids.add(job_id)
 
-        location = _extract_careers_field(card_text, "Location")
-        department = _extract_careers_field(card_text, "Department")
-        posted_date = _extract_careers_field(card_text, "Date Posted")
+        location = _extract_careers_field(card_text, "Location") or (table_values[2] if len(table_values) >= 5 else "")
+        department = _extract_careers_field(card_text, "Department") or (table_values[3] if len(table_values) >= 5 else "")
+        posted_date = _extract_careers_field(card_text, "Date Posted") or (table_values[4] if len(table_values) >= 5 else "")
+        if numeric_id_index is not None and not table_values:
+            values = []
+            for line in lines[numeric_id_index + 1:]:
+                if re.match(r"Date\s+Posted\s*:", line, re.I):
+                    break
+                values.append(line)
+            location = location or (values[0].rstrip(",") if values else "")
+            department = department or (values[1] if len(values) > 1 else "")
         raw_context = clean_text(
             " ".join(
                 value
@@ -331,11 +357,28 @@ def _parse_careers_search_json(data: dict, agency: dict, normalize: bool = False
     return summaries
 
 
-def _blocked_listing_error(page_url: str, status_code: int) -> RuntimeError:
-    return RuntimeError(
-        f"MTA careers JSON listing returned {status_code} for {page_url}. "
-        "The request was blocked before parsing; on GitHub-hosted Actions this usually means "
-        "Cloudflare rejected the runner IP or TLS fingerprint."
+class MtaListingUnavailable(RuntimeError):
+    """A blocked or unrecognized listing, rather than an empty job board."""
+
+
+def _blocked_listing_error(page_url: str, status_code: int, response=None) -> MtaListingUnavailable:
+    diagnostics = []
+    if response is not None:
+        headers = getattr(response, "headers", {}) or {}
+        for key in ("server", "content-type", "cf-mitigated"):
+            value = headers.get(key)
+            if isinstance(value, str) and value:
+                diagnostics.append(f"{key}={clean_text(value)[:120]}")
+        body = getattr(response, "text", "")
+        if isinstance(body, str):
+            title = BeautifulSoup(body, "lxml").title
+            if title:
+                diagnostics.append(f"page_title={clean_text(title.get_text(' ', strip=True))[:120]}")
+    context = f" Response: {'; '.join(diagnostics)}." if diagnostics else ""
+    return MtaListingUnavailable(
+        f"MTA careers listing returned HTTP {status_code} for {page_url}. "
+        f"The request failed before parsing.{context} Check this URL in a normal browser on the runner's network; "
+        "a self-hosted runner can also be blocked."
     )
 
 
@@ -346,14 +389,17 @@ def _scrape_careers_json_summaries(session, agency: dict) -> list[dict]:
     for page in range(1, MAX_PAGES + 1):
         page_url = _careers_json_url(page)
         response = session.get(page_url, timeout=REQUEST_TIMEOUT, headers=JSON_HEADERS)
-        if getattr(response, "status_code", 200) == 403:
-            raise _blocked_listing_error(page_url, response.status_code)
+        if getattr(response, "status_code", 200) in {403, 429, 503}:
+            raise _blocked_listing_error(page_url, response.status_code, response)
         response.raise_for_status()
 
         try:
             payload = response.json()
         except ValueError as exc:
-            raise RuntimeError(f"MTA careers JSON listing was not valid JSON for {page_url}") from exc
+            raise MtaListingUnavailable(f"MTA careers JSON listing was not valid JSON for {page_url}") from exc
+
+        if not isinstance(payload, dict) or not isinstance(payload.get("entries"), list):
+            raise MtaListingUnavailable(f"MTA careers JSON listing had an unexpected shape for {page_url}")
 
         total_entries = payload.get("total_entries", total_entries)
         page_summaries = _parse_careers_search_json(payload, agency, normalize=False)
@@ -362,41 +408,85 @@ def _scrape_careers_json_summaries(session, agency: dict) -> list[dict]:
             + (f" total_entries={total_entries}" if total_entries is not None else "")
         )
         if not page_summaries:
+            if payload["entries"] or (total_entries is not None and len(summaries_by_id) < int(total_entries)):
+                raise MtaListingUnavailable(f"MTA careers JSON listing ended before all jobs were parsed for {page_url}")
             break
 
+        previous_count = len(summaries_by_id)
         for summary in page_summaries:
             summaries_by_id[summary["mta_internal_id"]] = summary
+        if len(summaries_by_id) == previous_count:
+            raise MtaListingUnavailable(f"MTA careers JSON pagination repeated page {page}")
 
-        if len(page_summaries) < PER_PAGE or (total_entries and len(summaries_by_id) >= int(total_entries)):
+        page_size = int(payload.get("per_page") or PER_PAGE)
+        if (total_entries is not None and len(summaries_by_id) >= int(total_entries)) or (
+            total_entries is None and len(page_summaries) < page_size
+        ):
             break
 
         time.sleep(LISTING_DELAY)
 
+    if total_entries is not None and len(summaries_by_id) < int(total_entries):
+        raise MtaListingUnavailable(f"MTA careers JSON listing ended with {len(summaries_by_id)}/{total_entries} jobs")
     return list(summaries_by_id.values())
 
 
+def _scrape_careers_html_summaries(session, agency: dict) -> list[dict]:
+    summaries_by_url = {}
+    for page in range(1, MAX_PAGES + 1):
+        page_url = _careers_page_url(page)
+        response = session.get(page_url, timeout=REQUEST_TIMEOUT, headers=DETAIL_HEADERS)
+        if response.status_code in {403, 429, 503}:
+            raise _blocked_listing_error(page_url, response.status_code, response)
+        response.raise_for_status()
+        soup = BeautifulSoup(response.text, "lxml")
+        text = clean_text(soup.get_text(" ", strip=True))
+        if re.search(r"just a moment|verify you are human|checking your browser", text, re.I):
+            raise MtaListingUnavailable(f"MTA careers HTML listing returned a challenge for {page_url}")
+        summaries = _parse_careers_search_page(response.text, agency, page_url)
+        if not summaries:
+            if page == 1 and re.search(r"\b0 (?:jobs|results)\b|no (?:jobs|results) (?:found|match)", text, re.I):
+                return []
+            raise MtaListingUnavailable(f"MTA careers HTML listing had no recognizable job cards for {page_url}")
+        new_summaries = [item for item in summaries if item["source_url"] not in summaries_by_url]
+        if not new_summaries:
+            raise MtaListingUnavailable(f"MTA careers HTML pagination repeated page {page}")
+        summaries_by_url.update((item["source_url"], item) for item in new_summaries)
+        print(f"MTA careers HTML listing page={page} jobs_found={len(summaries)}")
+        # Honor the actual result count even when the server caps per_page.
+        showing = re.search(r"Showing\s+[\d,]+\s*[-–]\s*([\d,]+)\s+of\s+([\d,]+)\s+results", text, re.I)
+        next_link = soup.select_one('a[rel~="next"], .pagination .next a, a.next_page')
+        if showing:
+            if int(showing.group(1).replace(",", "")) >= int(showing.group(2).replace(",", "")):
+                return list(summaries_by_url.values())
+        elif not next_link and len(summaries) < PER_PAGE:
+            return list(summaries_by_url.values())
+        if LISTING_DELAY:
+            time.sleep(LISTING_DELAY)
+    raise MtaListingUnavailable(f"MTA careers HTML listing exceeded MTA_CAREERS_MAX_PAGES={MAX_PAGES}")
+
+
 def _scrape_careers_summaries(agency: dict) -> list[dict]:
-    last_blocked_error = None
+    errors = []
 
     for impersonate in FALLBACK_IMPERSONATES:
         session = _new_careers_session(impersonate)
         try:
-            summaries = _scrape_careers_json_summaries(session, agency)
-        except RuntimeError as exc:
-            if "MTA careers JSON listing returned 403" not in str(exc):
-                raise
-            last_blocked_error = exc
-            print(f"MTA careers JSON listing blocked with curl_cffi impersonate={impersonate}; trying fallback.")
-            continue
+            try:
+                summaries = _scrape_careers_json_summaries(session, agency)
+            except MtaListingUnavailable as exc:
+                errors.append(str(exc))
+                print(f"{exc} Trying public HTML listings with impersonate={impersonate}.")
+                summaries = _scrape_careers_html_summaries(session, agency)
+            _set_active_impersonate(impersonate)
+            return summaries
+        except MtaListingUnavailable as exc:
+            errors.append(str(exc))
+            print(f"{exc} Trying next session.")
+        finally:
+            session.close()
 
-        _set_active_impersonate(impersonate)
-        if impersonate != CURL_IMPERSONATE:
-            print(f"MTA careers JSON listing succeeded with curl_cffi impersonate={impersonate}.")
-        return summaries
-
-    if last_blocked_error:
-        raise last_blocked_error
-    return []
+    raise MtaListingUnavailable("MTA JSON and HTML listings were unavailable. " + " | ".join(errors))
 
 
 def _canonical_detail_label(label: str) -> str:
@@ -840,7 +930,23 @@ def _build_mta_job(summary: dict, agency: dict, details: Optional[dict] = None) 
 
 
 def scrape_mta(agency: dict) -> list[dict]:
-    summaries = _scrape_careers_summaries(agency)
+    transport = os.getenv("MTA_TRANSPORT", "auto").strip().lower()
+    if transport not in {"auto", "http", "browser"}:
+        raise ValueError("MTA_TRANSPORT must be auto, http or browser")
+    if transport == "browser":
+        from scrapers.mta_browser import scrape_mta_browser
+        return scrape_mta_browser(agency)
+    try:
+        summaries = _scrape_careers_summaries(agency)
+    except MtaListingUnavailable:
+        if transport == "http":
+            raise
+        print("MTA HTTP listings unavailable; switching to a persistent browser session.", flush=True)
+        from scrapers.mta_browser import scrape_mta_browser
+        try:
+            return scrape_mta_browser(agency)
+        except Exception as browser_error:
+            raise MtaListingUnavailable(f"MTA browser fallback failed: {browser_error}") from browser_error
     if not summaries:
         return []
 

@@ -6,7 +6,7 @@ The core idea is simple: transit agencies use many different career platforms, s
 
 ## What It Does
 
-- Scrapes jobs from 119 U.S. public transportation agencies
+- Scrapes jobs from 120 U.S. public transportation agencies
 - Normalizes titles, agencies, `City, State` locations, categories, seniority, dates, and pay
 - Parses salary ranges into clear `salary_min`, `salary_max`, and `salary_range_display` fields
 - Preserves original salary text for source accuracy
@@ -34,6 +34,7 @@ The California expansion uses the 2024 agency workbook as the source list and ad
 - LA Metro (Los Angeles, CA)
 - CTA (Chicago, IL)
 - NJ Transit (Newark, NJ)
+- NITA — Northern Illinois Transit Authority (Chicago, IL)
 - SFMTA (San Francisco, CA)
 - WMATA (Washington, DC)
 - SEPTA (Philadelphia, PA)
@@ -155,16 +156,16 @@ The California expansion uses the 2024 agency workbook as the source list and ad
 Implemented platform scrapers:
 
 - `governmentjobs` - GovernmentJobs / NEOGOV endpoint and detail pages
-- `mta_custom` - MTA careers site through non-browser `curl_cffi` Chrome impersonation
+- `mta_custom` - MTA careers HTTP listings with persistent-browser fallback for browser challenges
 - `taleo` - Taleo jobboard API, used for CTA
 - `taleo_v2` - Rendered Taleo v2 boards, used for PSTA
 - `successfactors` - SEPTA
 - `workday` - Workday and newer `myworkdaysite.com/recruiting/...` paths, including OCTA
-- `oracle` - Oracle Cloud HCM candidate sites
+- `oracle` - Oracle Cloud HCM candidate sites, including WMATA's CX_2011 board and NJ Transit's current careers board
+- `infor` - Public Infor Candidate Self-Service listing/detail feeds, used by NITA
 - `ukg` - UKG / UltiPro job boards
-- `salesforce_custom` - NJ Transit Salesforce career site
+- `salesforce_custom` - Legacy Salesforce career sites
 - `sf_careers` - SFMTA / City and County of San Francisco careers
-- `peoplesoft_wmata` - WMATA PeopleSoft listings
 - `jobs2web` - Jobs2Web / SAP-style boards, used for Houston METRO
 - `panynj_custom` - Port Authority/PATH text-rendered listings and detail pages
 - `cadient` - Cadient boards, used for Metra
@@ -228,9 +229,33 @@ The repository includes `.github/workflows/scrape-and-deploy.yml` for GitHub Pag
 
 The workflow is configured for a `self-hosted` GitHub Actions runner so MTA requests come from a normal residential or office network instead of GitHub-hosted datacenter IPs. It installs dependencies, installs Playwright Chromium, runs `python main.py` from a clean checkout with scrape detail caching disabled, uploads the latest CSV as a short-lived artifact, and deploys the generated `site/` folder to GitHub Pages. Enable Pages with source set to GitHub Actions in the repository settings before relying on the scheduled deployment.
 
-In CI, MTA uses the current careers site with `curl_cffi` Chrome impersonation, reads listing pages with `per_page=100`, and enriches salary/detail fields from each live detail page without Playwright or Jobvite.
+In CI, MTA uses `MTA_TRANSPORT=browser` to read listings and details in the same persistent browser session. Locally, `auto` tries HTTP first and switches to the browser if the listings are blocked or unrecognized. `MTA_TRANSPORT=http` disables that fallback. The browser uses installed Google Chrome when available, otherwise Playwright Chromium. It opens a visible window on macOS/Windows or Linux with a display; set `MTA_BROWSER_HEADLESS=1` for a displayless run. It never copies cookies into curl requests or sends parallel curl requests after obtaining browser access.
+
+MTA is temporarily skipped in normal refreshes while its browser scraper is being debugged, using `skip_scrape_reason` in `agencies.py`. Existing cache-preservation rules still apply. The explicit `python tools/check_agencies.py MTA --mta-browser` command bypasses this MTA-only skip for debugging without enabling it in regular runs. Remove the MTA `skip_scrape_reason` entry when ready to resume refreshes.
+
+The dedicated profile defaults to `~/.cache/transit-job-scraper/mta-browser`, outside the checkout, so `actions/checkout` cannot remove it. Manual checks and Actions must run as the same OS account to share it, or set `MTA_BROWSER_PROFILE` to the same directory in both. A profile cannot be used concurrently by two browsers. Cloudflare can still require human verification; in that case use a visible browser on the runner's desktop, complete verification there, and rerun with the same profile. This is not a guarantee that Cloudflare permits unattended automation.
+
+To try the browser path directly:
+
+```bash
+python tools/check_agencies.py MTA --mta-browser
+```
+
+`MTA_BROWSER_WAIT_SECONDS` bounds the wait for rendered content/verification (default 60 seconds). `MTA_BROWSER_DETAIL_WORKERS` bounds detail tabs (default 3). The browser requests 100 jobs per page by default (`MTA_CAREERS_PER_PAGE`) and retains that setting on every next-page link; 322 jobs therefore require four listing pages instead of thirteen. Listings follow the site's advertised result count and fail on repeated, incomplete or truncated pages. A browser challenge is never treated as zero jobs or a successful detail response.
+
+To check just the affected boards without overwriting the CSV or website data:
+
+```bash
+python tools/check_agencies.py MBTA WMATA MTA
+```
+
+This prints counts and sample official job links, and exits unsuccessfully if a selected agency fails or returns zero jobs. Run it on the Actions runner for a meaningful connectivity check. MBTA uses the `mbtama` GovernmentJobs board; WMATA uses the Oracle board linked from its official careers page.
 
 GovernmentJobs agencies are listing-first for scheduled runs. The listing endpoint already includes salary, schedule, department/category hints, posted/closing text, and a description preview, so the scraper avoids opening every detail page unless `GOVJOBS_FETCH_DETAILS=1` is explicitly set.
+
+NJ Transit uses the Oracle board at `https://jobs.njtransit.com/en/sites/Careers/jobs`. Its public alias `Careers` differs from the API site number `CX_1`; `api_base_url` and `site_number` in `agencies.py` match the metadata published in the board's `<base>` element. API requests use that backend while application links retain the official `jobs.njtransit.com/en/sites/Careers/job/...` format.
+
+NITA's official careers page at `https://nita.illinois.gov/careers` links to its Infor Candidate Self-Service board. The scraper reads its public `pageop=load` JSON feeds, follows the supplied next-page URLs, and collects job descriptions, salaries, posting/closing dates, locations and employment types without signing in. Application links open the corresponding public Infor job posting. Check it independently with `python tools/check_agencies.py NITA`.
 
 Several detail-heavy boards, including Workday, UKG, Oracle, SuccessFactors, Jobs2Web, NJ Transit, PATH, UTA, CDTA, and NFTA, can reuse cached detail fields for unchanged current jobs during local repeat runs. The GitHub Actions workflow disables this cache so scheduled deployments are built from a fresh scrape.
 

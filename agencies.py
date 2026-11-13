@@ -4,7 +4,8 @@ AGENCIES = [
         "city": "New York",
         "state": "NY",
         "platform": "mta_custom",
-        "jobs_url": "https://careers.mta.org/search/jobs/in",
+        "jobs_url": "https://careers.mta.org/search/jobs",
+        "skip_scrape_reason": "Temporarily disabled while the MTA browser scraper is being debugged.",
     },
     {
         "agency": "LA Metro",
@@ -21,11 +22,22 @@ AGENCIES = [
         "jobs_url": "https://chicagotransit.taleo.net/careersection/inm/jobsearch.ftl",
     },
     {
+        "agency": "NITA",
+        "city": "Chicago",
+        "state": "IL",
+        "platform": "infor",
+        "jobs_url": "https://css-rtachicago-prd.inforcloudsuite.com/hcm/Jobs/list/JobPosting.SearchForJobsResults?csk.JobBoard=EXTERNAL&csk.HROrganization=1&menu=JobsNavigationMenu.JobSearch",
+    },
+    {
         "agency": "NJ Transit",
         "city": "Newark",
         "state": "NJ",
-        "platform": "salesforce_custom",
-        "jobs_url": "https://njtransit.my.salesforce-sites.com/",
+        "platform": "oracle",
+        "jobs_url": "https://jobs.njtransit.com/en/sites/Careers/jobs",
+        # Published by the board's <base> element: Careers is the public alias,
+        # while the API serves the external board under site number CX_1.
+        "api_base_url": "https://ibrgjb.fa.ocs.oraclecloud.com",
+        "site_number": "CX_1",
     },
     {
         "agency": "SFMTA",
@@ -39,8 +51,8 @@ AGENCIES = [
         "agency": "WMATA",
         "city": "Washington",
         "state": "DC",
-        "platform": "peoplesoft_wmata",
-        "jobs_url": "https://careers.wmata.com/psc/careers/EXT_APPLICANT/HRMS/c/HRS_HRAM.HRS_CE.GBL?Action=A&HRS_PERSON_ID=0&SiteId=1&Page=HRS_CE_JOB_LST&PortalHostNode=CAREERS&PortalRegistryName=EXT_APPLICANT&PortalServletURI=https%3A%2F%2Fcareers.wmata.com%2Fpsp%2Fcareers%2F&PortalURI=https%3A%2F%2Fcareers.wmata.com%2Fpsc%2Fcareers%2F",
+        "platform": "oracle",
+        "jobs_url": "https://eservice.wmata.com/hcmUI/CandidateExperience/en/sites/CX_2011/jobs",
     },
     {
         "agency": "SEPTA",
@@ -54,7 +66,7 @@ AGENCIES = [
         "city": "Boston",
         "state": "MA",
         "platform": "governmentjobs",
-        "jobs_url": "https://www.governmentjobs.com/careers/mbta",
+        "jobs_url": "https://www.governmentjobs.com/careers/mbtama",
     },
     {
         "agency": "King County Metro",
